@@ -165,7 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats.add_argument(
         "--route",
         choices=["morning", "evening", "aachen_morning", "aachen_evening",
-                 "wuppertal_morning", "wuppertal_evening"],
+                 "wuppertal_morning", "wuppertal_evening",
+                 "bonn_morning", "bonn_evening"],
         help="Restrict output to one route.",
     )
     p_stats.add_argument(

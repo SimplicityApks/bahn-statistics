@@ -10,6 +10,7 @@ DUESSELDORF_HBF_ID = "8000085"
 ESSEN_HBF_ID       = "8000098"
 AACHEN_HBF_ID      = "8000001"
 WUPPERTAL_HBF_ID   = "8000266"
+BONN_HBF_ID        = "8000044"
 
 # ---------------------------------------------------------------------------
 # Route definitions
@@ -77,6 +78,26 @@ ROUTES = {
         "to_id":        WUPPERTAL_HBF_ID,
         "from_name":    "Düsseldorf Hbf",
         "to_name":      "Wuppertal Hbf",
+        "window_start": time(17, 0),
+        "window_end":   time(20, 0),
+        "use_journeys": True,
+    },
+
+    # ---- Bonn ↔ Düsseldorf (RE5, RE8) ----
+    "bonn_morning": {
+        "from_id":      BONN_HBF_ID,
+        "to_id":        DUESSELDORF_HBF_ID,
+        "from_name":    "Bonn Hbf",
+        "to_name":      "Düsseldorf Hbf",
+        "window_start": time(7, 0),
+        "window_end":   time(10, 0),
+        "use_journeys": True,
+    },
+    "bonn_evening": {
+        "from_id":      DUESSELDORF_HBF_ID,
+        "to_id":        BONN_HBF_ID,
+        "from_name":    "Düsseldorf Hbf",
+        "to_name":      "Bonn Hbf",
         "window_start": time(17, 0),
         "window_end":   time(20, 0),
         "use_journeys": True,
