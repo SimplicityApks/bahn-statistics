@@ -23,7 +23,7 @@ ROUTES = {
         "from_name":      "Düsseldorf Hbf",
         "to_name":        "Essen Hbf",
         "window_start":   time(7, 0),
-        "window_end":     time(9, 0),
+        "window_end":     time(10, 0),
         "direction_hint": "Essen",
     },
     "evening": {
@@ -47,7 +47,7 @@ ROUTES = {
         "from_name":    "Aachen Hbf",
         "to_name":      "Düsseldorf Hbf",
         "window_start": time(7, 0),
-        "window_end":   time(9, 0),
+        "window_end":   time(10, 0),
         "use_journeys": True,   # use /journeys planner instead of dep+arr join
     },
     "aachen_evening": {
@@ -70,7 +70,7 @@ ROUTES = {
         "from_name":    "Wuppertal Hbf",
         "to_name":      "Düsseldorf Hbf",
         "window_start": time(7, 0),
-        "window_end":   time(9, 0),
+        "window_end":   time(10, 0),
         "use_journeys": True,
     },
     "wuppertal_evening": {
