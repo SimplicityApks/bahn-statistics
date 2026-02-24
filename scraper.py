@@ -298,7 +298,10 @@ async def _scrape_route_stage1_journeys(
         # Only keep trains within the window (with buffer)
         try:
             dep_dt = datetime.fromisoformat(journey["planned_dep"])
-            dep_local = dep_dt.replace(tzinfo=None) - utc_offset
+            # planned_dep is already in local timezone (CET +01:00 / CEST +02:00);
+            # strip tz-info to get a naive local time for comparison.
+            # Do NOT subtract utc_offset here — that would add an extra hour.
+            dep_local = dep_dt.replace(tzinfo=None)
             ws_buffered = local_ws_today.replace(
                 hour=ws.hour, minute=ws.minute
             ) - timedelta(minutes=ACTIVE_BUFFER_BEFORE_MIN)

@@ -292,7 +292,10 @@ def parse_journey_leg(journey: dict, route: str) -> Optional[dict]:
         return None
 
     planned_dep_str = leg.get("plannedDeparture") or leg.get("departure")
-    planned_arr_str = leg.get("plannedArrival")   or leg.get("arrival")
+    # Use only plannedArrival, never fall back to real-time 'arrival': during
+    # severe disruption HAFAS sets plannedArrival=null and 'arrival' holds the
+    # estimated (delayed) time, which would corrupt the planned travel-time stats.
+    planned_arr_str = leg.get("plannedArrival")
     if not planned_dep_str:
         return None
 
@@ -301,6 +304,20 @@ def parse_journey_leg(journey: dict, route: str) -> Optional[dict]:
         local_date = planned_dep_dt.strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return None
+
+    # Sanity-check arrival time: must be after departure and within 90 min
+    # (matches the check in enrich_with_arrival for the dep+arr board path).
+    if planned_arr_str:
+        try:
+            arr_dt = datetime.fromisoformat(planned_arr_str)
+            if arr_dt <= planned_dep_dt or (arr_dt - planned_dep_dt).total_seconds() > 90 * 60:
+                log.debug(
+                    "Rejected implausible plannedArrival for %s: dep=%s arr=%s",
+                    leg.get("tripId", "?"), planned_dep_str, planned_arr_str,
+                )
+                planned_arr_str = None
+        except (ValueError, TypeError):
+            planned_arr_str = None
 
     line = leg.get("line") or {}
     product  = line.get("product") or ""
