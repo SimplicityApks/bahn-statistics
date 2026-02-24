@@ -366,12 +366,15 @@ ROUTE_LABELS = {
     "aachen_evening":    "EVENING  Düsseldorf Hbf → Aachen Hbf",
     "wuppertal_morning": "MORNING  Wuppertal Hbf → Düsseldorf Hbf",
     "wuppertal_evening": "EVENING  Düsseldorf Hbf → Wuppertal Hbf",
+    "bonn_morning":      "MORNING  Bonn Hbf → Düsseldorf Hbf",
+    "bonn_evening":      "EVENING  Düsseldorf Hbf → Bonn Hbf",
 }
 
 ROUTE_ORDER = (
     "morning", "evening",
     "aachen_morning", "aachen_evening",
     "wuppertal_morning", "wuppertal_evening",
+    "bonn_morning", "bonn_evening",
 )
 
 
@@ -520,6 +523,8 @@ _ROUTE_SHORT = {
     "aachen_evening":    "DDF→AAH eve",
     "wuppertal_morning": "WUP→DDF morn",
     "wuppertal_evening": "DDF→WUP eve",
+    "bonn_morning":      "BON→DDF morn",
+    "bonn_evening":      "DDF→BON eve",
 }
 
 
