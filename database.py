@@ -82,13 +82,35 @@ def upsert_journey(conn: sqlite3.Connection, journey: dict) -> None:
         cancelled    = excluded.cancelled,
         data_stage   = excluded.data_stage,
         last_updated = excluded.last_updated,
-        planned_arr  = COALESCE(excluded.planned_arr, journeys.planned_arr),
         dep_delay_s  = CASE
                            WHEN excluded.dep_delay_s IS NOT NULL THEN excluded.dep_delay_s
                            ELSE journeys.dep_delay_s
                        END,
+        -- Only accept a new planned_arr if it yields a plausible travel time
+        -- against the *stored* planned_dep (1–90 min).  This guards against
+        -- HAFAS reusing the same ZI run-number for a later timetable period:
+        -- e.g. S8 ZI-XXX departs WUP at 07:00 (stored), then HAFAS issues
+        -- the same ZI for the 10:00 departure → upsert would keep dep=07:00
+        -- but overwrite arr with 10:30, producing a 210-min apparent journey.
+        planned_arr  = CASE
+                           WHEN excluded.planned_arr IS NULL
+                               THEN journeys.planned_arr
+                           WHEN (julianday(excluded.planned_arr)
+                                 - julianday(journeys.planned_dep)) * 1440
+                                BETWEEN 1 AND 90
+                               THEN excluded.planned_arr
+                           ELSE journeys.planned_arr
+                       END,
         arr_delay_s  = CASE
-                           WHEN excluded.arr_delay_s IS NOT NULL THEN excluded.arr_delay_s
+                           WHEN excluded.arr_delay_s IS NOT NULL
+                            AND excluded.planned_arr IS NOT NULL
+                            AND (julianday(excluded.planned_arr)
+                                 - julianday(journeys.planned_dep)) * 1440
+                                BETWEEN 1 AND 90
+                               THEN excluded.arr_delay_s
+                           WHEN excluded.arr_delay_s IS NOT NULL
+                            AND journeys.planned_arr IS NULL
+                               THEN excluded.arr_delay_s
                            ELSE journeys.arr_delay_s
                        END
     """
