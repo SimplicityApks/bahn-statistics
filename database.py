@@ -87,17 +87,19 @@ def upsert_journey(conn: sqlite3.Connection, journey: dict) -> None:
                            ELSE journeys.dep_delay_s
                        END,
         -- Only accept a new planned_arr if it yields a plausible travel time
-        -- against the *stored* planned_dep (1–90 min).  This guards against
+        -- against the *stored* planned_dep (1–130 min).  This guards against
         -- HAFAS reusing the same ZI run-number for a later timetable period:
         -- e.g. S8 ZI-XXX departs WUP at 07:00 (stored), then HAFAS issues
         -- the same ZI for the 10:00 departure → upsert would keep dep=07:00
         -- but overwrite arr with 10:30, producing a 210-min apparent journey.
+        -- Upper bound raised to 130 to accommodate SEV bus+rail journeys
+        -- (Aachen SEV: ~103-108 min scheduled; 210-min collisions still rejected).
         planned_arr  = CASE
                            WHEN excluded.planned_arr IS NULL
                                THEN journeys.planned_arr
                            WHEN (julianday(excluded.planned_arr)
                                  - julianday(journeys.planned_dep)) * 1440
-                                BETWEEN 1 AND 90
+                                BETWEEN 1 AND 130
                                THEN excluded.planned_arr
                            ELSE journeys.planned_arr
                        END,
@@ -106,7 +108,7 @@ def upsert_journey(conn: sqlite3.Connection, journey: dict) -> None:
                             AND excluded.planned_arr IS NOT NULL
                             AND (julianday(excluded.planned_arr)
                                  - julianday(journeys.planned_dep)) * 1440
-                                BETWEEN 1 AND 90
+                                BETWEEN 1 AND 130
                                THEN excluded.arr_delay_s
                            WHEN excluded.arr_delay_s IS NOT NULL
                             AND journeys.planned_arr IS NULL

@@ -255,6 +255,9 @@ async def _scrape_route_stage1_journeys(
     we: time = route_cfg["window_end"]
     from_id = route_cfg["from_id"]
     to_id   = route_cfg["to_id"]
+    max_legs        = route_cfg.get("max_legs", 1)
+    max_travel_min  = route_cfg.get("max_travel_min", 90)
+    extra_api_params = route_cfg.get("extra_api_params") or {}
 
     local_ws_today = now_local.replace(
         hour=ws.hour, minute=ws.minute, second=0, microsecond=0
@@ -276,18 +279,24 @@ async def _scrape_route_stage1_journeys(
 
     # The window covers ~2h 30min; fetch in two overlapping passes to cover it all
     # (the /journeys endpoint returns ~15 results per call, ~hourly frequency = 2-3 trains)
-    journeys_pass1 = await fetch_journeys(client, from_id, to_id, query_start_utc, results=20)
+    journeys_pass1 = await fetch_journeys(
+        client, from_id, to_id, query_start_utc, results=20,
+        max_legs=max_legs, extra_params=extra_api_params or None,
+    )
 
     # Second pass: offset by half the window to catch later trains
     half_window = timedelta(minutes=(we.hour * 60 + we.minute - ws.hour * 60 - ws.minute) // 2)
     query_start_pass2 = query_start_utc + half_window
-    journeys_pass2 = await fetch_journeys(client, from_id, to_id, query_start_pass2, results=20)
+    journeys_pass2 = await fetch_journeys(
+        client, from_id, to_id, query_start_pass2, results=20,
+        max_legs=max_legs, extra_params=extra_api_params or None,
+    )
 
     upserted = 0
     seen_keys: set[str] = set()
 
     for j_raw in journeys_pass1 + journeys_pass2:
-        journey = parse_journey_leg(j_raw, route_name)
+        journey = parse_journey_leg(j_raw, route_name, max_travel_min=max_travel_min)
         if journey is None:
             continue
         # Deduplicate within this cycle
@@ -336,6 +345,9 @@ async def _scrape_route_stage2_journeys(
 
     from_id = route_cfg["from_id"]
     to_id   = route_cfg["to_id"]
+    max_legs        = route_cfg.get("max_legs", 1)
+    max_travel_min  = route_cfg.get("max_travel_min", 90)
+    extra_api_params = route_cfg.get("extra_api_params") or {}
     refreshed = 0
 
     for row in pending:
@@ -347,10 +359,13 @@ async def _scrape_route_stage2_journeys(
             continue
 
         query_start = planned_dep_dt - timedelta(minutes=5)
-        journeys = await fetch_journeys(client, from_id, to_id, query_start, results=5)
+        journeys = await fetch_journeys(
+            client, from_id, to_id, query_start, results=5,
+            max_legs=max_legs, extra_params=extra_api_params or None,
+        )
 
         for j_raw in journeys:
-            journey = parse_journey_leg(j_raw, route_name)
+            journey = parse_journey_leg(j_raw, route_name, max_travel_min=max_travel_min)
             if journey is None:
                 continue
             if journey["trip_key"] != row["trip_key"]:

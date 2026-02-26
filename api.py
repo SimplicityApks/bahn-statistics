@@ -246,6 +246,8 @@ async def fetch_journeys(
     to_id: str,
     departure: datetime,
     results: int = 15,
+    max_legs: int = 1,
+    extra_params: Optional[dict] = None,
 ) -> list[dict]:
     """
     GET /journeys?from=...&to=...&departure=...
@@ -254,7 +256,9 @@ async def fetch_journeys(
     across HAFAS split points (e.g. Aachen → Düsseldorf).
 
     Returns raw journey dicts (each containing a 'legs' list).
-    Only direct connections (single-leg journeys) are returned.
+    max_legs=1 keeps only direct (single-leg) journeys.
+    max_legs=2 also includes 2-leg SEV connections (bus+rail or rail+bus).
+    extra_params are merged into the API query params (e.g. {"bus": "true"}).
     """
     params = {
         "from":      from_id,
@@ -263,39 +267,70 @@ async def fetch_journeys(
         "results":   results,
         **PRODUCT_PARAMS,
     }
+    if extra_params:
+        params.update(extra_params)
     try:
         data = await _get(client, "/journeys", params)
         journeys = data.get("journeys", []) if isinstance(data, dict) else []
-        # Keep only direct (single-leg) journeys
-        return [j for j in journeys if len(j.get("legs", [])) == 1]
+        # Keep journeys within the leg limit (1 = direct only, 2 = allows SEV bus+rail)
+        return [j for j in journeys if 1 <= len(j.get("legs", [])) <= max_legs]
     except Exception as exc:
         log.error("fetch_journeys(%s→%s) failed: %s", from_id, to_id, exc)
         return []
 
 
-def parse_journey_leg(journey: dict, route: str) -> Optional[dict]:
+def parse_journey_leg(
+    journey: dict,
+    route: str,
+    max_travel_min: int = 90,
+) -> Optional[dict]:
     """
-    Convert a single-leg /journeys entry into a normalised journey dict.
+    Convert a /journeys entry into a normalised journey dict.
+
+    Handles both single-leg direct trains and 2-leg SEV connections
+    (bus+rail or rail+bus).  For 2-leg journeys:
+    - trip_key/line info come from the rail leg (identified by ALLOWED_PRODUCTS)
+    - planned_dep comes from legs[0] (user's departure from origin)
+    - planned_arr comes from legs[-1] (user's arrival at destination)
+    - dep_delay comes from legs[0], arr_delay from legs[-1]
 
     The /journeys endpoint uses 'departureDelay'/'arrivalDelay' field names
     in leg objects (unlike the departure/arrival boards which use 'delay').
+
+    max_travel_min: upper bound for the planned travel time sanity check.
+    Use 90 for standard routes, 120 for SEV routes (bus+rail ~103-108 min).
 
     Returns None if essential fields are missing or the product is not allowed.
     """
     legs = journey.get("legs", [])
     if not legs:
         return None
-    leg = legs[0]
 
-    trip_id = leg.get("tripId") or leg.get("trip") or ""
+    if len(legs) == 1:
+        rail_leg = legs[0]
+    elif len(legs) == 2:
+        # SEV: one leg is a bus, the other is the rail service.
+        # Find the rail leg by product; it carries the trip_key and line info.
+        rail_legs = [
+            l for l in legs
+            if (l.get("line") or {}).get("product") in ALLOWED_PRODUCTS
+        ]
+        if not rail_legs:
+            return None
+        rail_leg = rail_legs[0]
+    else:
+        return None
+
+    trip_id = rail_leg.get("tripId") or rail_leg.get("trip") or ""
     if not trip_id:
         return None
 
-    planned_dep_str = leg.get("plannedDeparture") or leg.get("departure")
+    # Departure = first leg (origin); arrival = last leg (destination).
     # Use only plannedArrival, never fall back to real-time 'arrival': during
     # severe disruption HAFAS sets plannedArrival=null and 'arrival' holds the
     # estimated (delayed) time, which would corrupt the planned travel-time stats.
-    planned_arr_str = leg.get("plannedArrival")
+    planned_dep_str = legs[0].get("plannedDeparture") or legs[0].get("departure")
+    planned_arr_str = legs[-1].get("plannedArrival")
     if not planned_dep_str:
         return None
 
@@ -305,42 +340,42 @@ def parse_journey_leg(journey: dict, route: str) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
 
-    # Sanity-check arrival time: must be after departure and within 90 min
-    # (matches the check in enrich_with_arrival for the dep+arr board path).
+    # Sanity-check arrival time: must be after departure and within max_travel_min.
     if planned_arr_str:
         try:
             arr_dt = datetime.fromisoformat(planned_arr_str)
-            if arr_dt <= planned_dep_dt or (arr_dt - planned_dep_dt).total_seconds() > 90 * 60:
+            if arr_dt <= planned_dep_dt or (arr_dt - planned_dep_dt).total_seconds() > max_travel_min * 60:
                 log.debug(
                     "Rejected implausible plannedArrival for %s: dep=%s arr=%s",
-                    leg.get("tripId", "?"), planned_dep_str, planned_arr_str,
+                    rail_leg.get("tripId", "?"), planned_dep_str, planned_arr_str,
                 )
                 planned_arr_str = None
         except (ValueError, TypeError):
             planned_arr_str = None
 
-    line = leg.get("line") or {}
-    product  = line.get("product") or ""
+    line = rail_leg.get("line") or {}
+    product   = line.get("product") or ""
     line_name = (line.get("name") or "").replace(" ", "")
 
     if product not in ALLOWED_PRODUCTS:
         return None
 
-    # /journeys legs use departureDelay / arrivalDelay (may also have 'delay')
-    dep_delay = leg.get("departureDelay")
+    # Departure delay from origin leg; arrival delay from destination leg.
+    # /journeys legs use departureDelay / arrivalDelay (may also have 'delay').
+    dep_delay = legs[0].get("departureDelay")
     if dep_delay is None:
-        dep_delay = leg.get("delay")
-    arr_delay = leg.get("arrivalDelay")
+        dep_delay = legs[0].get("delay")
+    arr_delay = legs[-1].get("arrivalDelay")
 
-    cancelled = bool(journey.get("cancelled") or leg.get("cancelled"))
+    cancelled = bool(journey.get("cancelled") or any(l.get("cancelled") for l in legs))
 
     return {
-        "trip_key":   make_trip_key(trip_id),
-        "trip_id":    trip_id,
-        "date":       local_date,
-        "route":      route,
-        "line_name":  line_name,
-        "product":    product,
+        "trip_key":    make_trip_key(trip_id),
+        "trip_id":     trip_id,
+        "date":        local_date,
+        "route":       route,
+        "line_name":   line_name,
+        "product":     product,
         "planned_dep": planned_dep_str,
         "planned_arr": planned_arr_str,
         "dep_delay_s": int(dep_delay) if dep_delay is not None else None,

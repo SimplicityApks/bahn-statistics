@@ -36,28 +36,40 @@ ROUTES = {
         "direction_hint": "Düsseldorf",
     },
 
-    # ---- Aachen ↔ Düsseldorf (RE1, RE4) ----
+    # ---- Aachen ↔ Düsseldorf (RE1, RE4 via SEV) ----
     # HAFAS changes the #ZI# run-number at Düsseldorf Hbf, so the departure-board
     # tripId from Aachen never matches the arrival-board tripId at Düsseldorf.
     # Use the /journeys planner endpoint instead — it resolves through-journeys
     # correctly and returns both departure and arrival data in one call.
+    #
+    # Since ~2026-02-21, RE4 operates under SEV: bus from Aachen Hbf to
+    # Herzogenrath (~30 min) + RE4 from Herzogenrath to Düsseldorf (~63 min)
+    # = ~93-108 min minimum scheduled travel time.
+    # max_legs=2 and extra_api_params={bus:true} enable capture of these
+    # 2-leg (bus+rail) journeys.  max_travel_min=120 raises the 90-min cap.
     "aachen_morning": {
-        "from_id":      AACHEN_HBF_ID,
-        "to_id":        DUESSELDORF_HBF_ID,
-        "from_name":    "Aachen Hbf",
-        "to_name":      "Düsseldorf Hbf",
-        "window_start": time(7, 0),
-        "window_end":   time(10, 0),
-        "use_journeys": True,   # use /journeys planner instead of dep+arr join
+        "from_id":          AACHEN_HBF_ID,
+        "to_id":            DUESSELDORF_HBF_ID,
+        "from_name":        "Aachen Hbf",
+        "to_name":          "Düsseldorf Hbf",
+        "window_start":     time(7, 0),
+        "window_end":       time(10, 0),
+        "use_journeys":     True,   # use /journeys planner instead of dep+arr join
+        "max_legs":         2,      # allow bus+rail SEV connections
+        "max_travel_min":   120,    # SEV Aachen→DDF: ~103-108 min scheduled
+        "extra_api_params": {"bus": "true"},
     },
     "aachen_evening": {
-        "from_id":      DUESSELDORF_HBF_ID,
-        "to_id":        AACHEN_HBF_ID,
-        "from_name":    "Düsseldorf Hbf",
-        "to_name":      "Aachen Hbf",
-        "window_start": time(17, 0),
-        "window_end":   time(20, 0),
-        "use_journeys": True,
+        "from_id":          DUESSELDORF_HBF_ID,
+        "to_id":            AACHEN_HBF_ID,
+        "from_name":        "Düsseldorf Hbf",
+        "to_name":          "Aachen Hbf",
+        "window_start":     time(17, 0),
+        "window_end":       time(20, 0),
+        "use_journeys":     True,
+        "max_legs":         2,
+        "max_travel_min":   120,
+        "extra_api_params": {"bus": "true"},
     },
 
     # ---- Wuppertal ↔ Düsseldorf (RE4, RE13, S8) ----
