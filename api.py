@@ -360,6 +360,13 @@ def parse_journey_leg(
     if product not in ALLOWED_PRODUCTS:
         return None
 
+    # For multi-leg journeys (e.g. connecting bus+rail), tag the line name with
+    # "+1" to keep stats separated from direct service.  When the connection is
+    # no longer needed, direct trains accumulate under the plain name ("RE4")
+    # while historical connection data stays under "RE4+1" — no cross-contamination.
+    if len(legs) > 1:
+        line_name = f"{line_name}+1"
+
     # Departure delay from origin leg; arrival delay from destination leg.
     # /journeys legs use departureDelay / arrivalDelay (may also have 'delay').
     dep_delay = legs[0].get("departureDelay")
