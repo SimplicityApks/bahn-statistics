@@ -272,11 +272,27 @@ async def fetch_journeys(
     try:
         data = await _get(client, "/journeys", params)
         journeys = data.get("journeys", []) if isinstance(data, dict) else []
-        # Keep journeys within the leg limit (1 = direct only, 2 = allows SEV bus+rail)
-        return [j for j in journeys if 1 <= len(j.get("legs", [])) <= max_legs]
+        # Count only transit legs (walking/transfer legs don't count as connections).
+        return [j for j in journeys if 1 <= _transit_leg_count(j) <= max_legs]
     except Exception as exc:
         log.error("fetch_journeys(%s→%s) failed: %s", from_id, to_id, exc)
         return []
+
+
+def _transit_legs(journey: dict) -> list[dict]:
+    """
+    Return only the transit (vehicle) legs of a journey, excluding walking /
+    transfer legs.  HAFAS marks walking legs with ``walking: true`` and they
+    have no ``line`` object.
+    """
+    return [
+        l for l in journey.get("legs", [])
+        if not l.get("walking") and l.get("line")
+    ]
+
+
+def _transit_leg_count(journey: dict) -> int:
+    return len(_transit_legs(journey))
 
 
 def parse_journey_leg(
@@ -287,32 +303,35 @@ def parse_journey_leg(
     """
     Convert a /journeys entry into a normalised journey dict.
 
-    Handles both single-leg direct trains and 2-leg SEV connections
-    (bus+rail or rail+bus).  For 2-leg journeys:
+    Handles both single-leg direct trains and 2-leg connections (e.g. bus+rail
+    or rail+bus, possibly with interleaved walking legs that are ignored).
+    For 2-transit-leg journeys:
     - trip_key/line info come from the rail leg (identified by ALLOWED_PRODUCTS)
-    - planned_dep comes from legs[0] (user's departure from origin)
-    - planned_arr comes from legs[-1] (user's arrival at destination)
-    - dep_delay comes from legs[0], arr_delay from legs[-1]
+    - planned_dep comes from the first transit leg (user's departure from origin)
+    - planned_arr comes from the last transit leg (user's arrival at destination)
+    - dep_delay comes from the first transit leg, arr_delay from the last
+
+    Walking legs between vehicle legs are stripped before processing.
 
     The /journeys endpoint uses 'departureDelay'/'arrivalDelay' field names
     in leg objects (unlike the departure/arrival boards which use 'delay').
 
     max_travel_min: upper bound for the planned travel time sanity check.
-    Use 90 for standard routes, 120 for SEV routes (bus+rail ~103-108 min).
+    Use 90 for standard routes, 120 for connection routes (~103-108 min).
 
     Returns None if essential fields are missing or the product is not allowed.
     """
-    legs = journey.get("legs", [])
-    if not legs:
+    tlegs = _transit_legs(journey)
+    if not tlegs:
         return None
 
-    if len(legs) == 1:
-        rail_leg = legs[0]
-    elif len(legs) == 2:
-        # SEV: one leg is a bus, the other is the rail service.
+    if len(tlegs) == 1:
+        rail_leg = tlegs[0]
+    elif len(tlegs) == 2:
+        # One leg is the connecting service (e.g. bus), the other is the rail.
         # Find the rail leg by product; it carries the trip_key and line info.
         rail_legs = [
-            l for l in legs
+            l for l in tlegs
             if (l.get("line") or {}).get("product") in ALLOWED_PRODUCTS
         ]
         if not rail_legs:
@@ -325,12 +344,12 @@ def parse_journey_leg(
     if not trip_id:
         return None
 
-    # Departure = first leg (origin); arrival = last leg (destination).
+    # Departure = first transit leg (origin); arrival = last transit leg (destination).
     # Use only plannedArrival, never fall back to real-time 'arrival': during
     # severe disruption HAFAS sets plannedArrival=null and 'arrival' holds the
     # estimated (delayed) time, which would corrupt the planned travel-time stats.
-    planned_dep_str = legs[0].get("plannedDeparture") or legs[0].get("departure")
-    planned_arr_str = legs[-1].get("plannedArrival")
+    planned_dep_str = tlegs[0].get("plannedDeparture") or tlegs[0].get("departure")
+    planned_arr_str = tlegs[-1].get("plannedArrival")
     if not planned_dep_str:
         return None
 
@@ -364,17 +383,17 @@ def parse_journey_leg(
     # "+1" to keep stats separated from direct service.  When the connection is
     # no longer needed, direct trains accumulate under the plain name ("RE4")
     # while historical connection data stays under "RE4+1" — no cross-contamination.
-    if len(legs) > 1:
+    if len(tlegs) > 1:
         line_name = f"{line_name}+1"
 
     # Departure delay from origin leg; arrival delay from destination leg.
     # /journeys legs use departureDelay / arrivalDelay (may also have 'delay').
-    dep_delay = legs[0].get("departureDelay")
+    dep_delay = tlegs[0].get("departureDelay")
     if dep_delay is None:
-        dep_delay = legs[0].get("delay")
-    arr_delay = legs[-1].get("arrivalDelay")
+        dep_delay = tlegs[0].get("delay")
+    arr_delay = tlegs[-1].get("arrivalDelay")
 
-    cancelled = bool(journey.get("cancelled") or any(l.get("cancelled") for l in legs))
+    cancelled = bool(journey.get("cancelled") or any(l.get("cancelled") for l in tlegs))
 
     return {
         "trip_key":    make_trip_key(trip_id),
