@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS journeys (
     dep_delay_s  INTEGER,            -- seconds; null = not yet known
     arr_delay_s  INTEGER,            -- seconds at destination; null = not yet known
     cancelled    INTEGER NOT NULL DEFAULT 0,
-    data_stage   TEXT    NOT NULL DEFAULT 'initial',  -- 'initial' | 'refreshed'
+    data_stage   TEXT    NOT NULL DEFAULT 'initial',  -- 'initial' | 'refreshed' | 'arrived'
     last_updated TEXT    NOT NULL,
     UNIQUE(trip_key, date, route)
 );
@@ -207,6 +207,67 @@ def log_scrape_run(conn: sqlite3.Connection, run: dict) -> None:
         conn.commit()
     except sqlite3.Error as exc:
         log.error("log_scrape_run failed: %s", exc)
+
+
+def get_pending_arrival_check(
+    conn: sqlite3.Connection,
+    route: str,
+    cutoff_minutes: int = 5,
+) -> list[dict]:
+    """
+    Return journeys for which we should now confirm the actual arrival delay:
+    - planned_arr is set and has passed by at least cutoff_minutes
+    - planned_arr is not older than 90 minutes (train still visible in arrival board)
+    - data_stage is not yet 'arrived'
+    - not cancelled
+    - today's date
+
+    Used by stage 3 of the scraper (for /journeys routes) to replace the
+    HAFAS departure-time prediction with an actual post-arrival measurement.
+    """
+    # Use datetime('now') without the 'utc' modifier: in SQLite 'now' already
+    # returns UTC, and the 'utc' modifier means "treat input as local and convert
+    # to UTC" (i.e. it subtracts the local UTC offset a second time), which
+    # would give a window that is skewed by one hour on a CET system.
+    sql = """
+    SELECT * FROM journeys
+    WHERE route = ?
+      AND date  = date('now', 'localtime')
+      AND cancelled = 0
+      AND planned_arr IS NOT NULL
+      AND data_stage != 'arrived'
+      AND datetime(planned_arr) <= datetime('now', '-' || ? || ' minutes')
+      AND datetime(planned_arr) >= datetime('now', '-90 minutes')
+    ORDER BY planned_arr
+    """
+    cursor = conn.execute(sql, (route, cutoff_minutes))
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def update_arr_delay(
+    conn: sqlite3.Connection,
+    trip_key: str,
+    date: str,
+    route: str,
+    arr_delay_s: int,
+) -> None:
+    """
+    Overwrite arr_delay_s with the actual post-arrival measurement and mark
+    data_stage as 'arrived'.  Called by stage 3 after reading the arrival board.
+    """
+    sql = """
+    UPDATE journeys
+    SET arr_delay_s  = ?,
+        data_stage   = 'arrived',
+        last_updated = ?
+    WHERE trip_key = ? AND date = ? AND route = ?
+    """
+    try:
+        conn.execute(sql, (arr_delay_s, _now_iso(), trip_key, date, route))
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.error("update_arr_delay failed for %s: %s", trip_key, exc)
+        conn.rollback()
 
 
 def count_journeys(conn: sqlite3.Connection) -> int:

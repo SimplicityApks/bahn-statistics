@@ -28,6 +28,7 @@ import httpx
 from api import (
     build_arrival_index,
     enrich_with_arrival,
+    extract_delay_seconds,
     fetch_arrivals,
     fetch_departures,
     fetch_journeys,
@@ -46,7 +47,13 @@ from config import (
     REFRESH_LOOKAHEAD_MIN,
     ROUTES,
 )
-from database import get_pending_refresh, log_scrape_run, upsert_journey
+from database import (
+    get_pending_arrival_check,
+    get_pending_refresh,
+    log_scrape_run,
+    update_arr_delay,
+    upsert_journey,
+)
 
 log = logging.getLogger(__name__)
 
@@ -437,6 +444,77 @@ async def _scrape_route_stage2(
     return refreshed
 
 
+async def _scrape_route_stage3(
+    client: httpx.AsyncClient,
+    conn: sqlite3.Connection,
+    route_name: str,
+    route_cfg: dict,
+) -> int:
+    """
+    Stage 3 (for /journeys routes only): confirm actual arrival delays.
+
+    After planned_arr has passed, query the arrival board at the destination
+    and replace the HAFAS departure-time prediction (stored by stage 2) with
+    the real measured arrival delay.
+
+    Why this is needed: the /journeys planner returns arrivalDelay as a
+    prediction at query time (before the train reaches the destination).
+    Routes using dep+arr boards already get real data because the arrival
+    board is queried separately and only shows trains that have physically
+    arrived.  Stage 3 closes this gap for /journeys routes.
+    """
+    pending = get_pending_arrival_check(conn, route_name)
+    if not pending:
+        return 0
+
+    to_id = route_cfg["to_id"]
+
+    # Parse planned_arr timestamps (stored with tz offset, e.g. +01:00)
+    arr_times_utc = []
+    for row in pending:
+        try:
+            dt = datetime.fromisoformat(row["planned_arr"]).astimezone(timezone.utc)
+            arr_times_utc.append(dt)
+        except (ValueError, KeyError, TypeError):
+            pass
+    if not arr_times_utc:
+        return 0
+
+    # One arrival-board query covers all pending arrivals plus a 90-min delay
+    # margin, so late trains that haven't arrived yet will be caught next cycle.
+    query_start = min(arr_times_utc) - timedelta(minutes=5)
+    span_min = int((max(arr_times_utc) - min(arr_times_utc)).total_seconds() / 60)
+    duration_min = max(90, span_min + 90)
+
+    arrs = await fetch_arrivals(
+        client, to_id, query_start, duration_min=duration_min, results=200
+    )
+    if not arrs:
+        log.debug("[%s] Stage-3: arrival board returned no entries", route_name)
+        return 0
+
+    arrival_index = build_arrival_index(arrs)
+    updated = 0
+
+    for row in pending:
+        arr = arrival_index.get(row["trip_key"])
+        if arr is None:
+            # Train hasn't appeared in arrival board yet (still en route or
+            # very delayed); will be retried on the next scraper cycle.
+            continue
+        actual_delay = extract_delay_seconds(arr, "delay")
+        if actual_delay is None:
+            continue
+        update_arr_delay(conn, row["trip_key"], row["date"], route_name, actual_delay)
+        updated += 1
+
+    log.info(
+        "[%s] Stage-3: confirmed %d/%d arrival delays (%d not yet arrived)",
+        route_name, updated, len(pending), len(pending) - updated,
+    )
+    return updated
+
+
 async def scrape_route(
     client: httpx.AsyncClient,
     conn: sqlite3.Connection,
@@ -467,6 +545,15 @@ async def scrape_route(
     except Exception as exc:
         log.error("[%s] Stage-2 failed: %s", route_name, exc, exc_info=True)
         errors += 1
+
+    # Stage 3: only for /journeys routes — confirm actual arrival delays from
+    # the arrival board now that the trains have reached their destination.
+    if use_journeys:
+        try:
+            await _scrape_route_stage3(client, conn, route_name, route_cfg)
+        except Exception as exc:
+            log.error("[%s] Stage-3 failed: %s", route_name, exc, exc_info=True)
+            errors += 1
 
     duration = time_mod.monotonic() - t0
     run = {
