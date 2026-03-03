@@ -306,8 +306,10 @@ def rank_recommendations(stats: dict) -> list[dict]:
                 "score": score,
                 "verdict": verdict,
                 "count": data["count"],
+                "arr_mean_min": arr_mean_min,
                 "arr_p90_min": arr_p90_min,
                 "delta_p90_min": delta_p90_min,
+                "door_mean_min": s.get("door_mean_min"),
                 "door_p90_min": door_p90,
                 "cancel_pct": cancel,
             })
@@ -545,8 +547,10 @@ def _print_recommendations(recs: list[dict]) -> None:
     t.add_column("Line",        style="bold")
     t.add_column("Score",       justify="right")
     t.add_column("N",           justify="right")
+    t.add_column("Arr mean",    justify="right")
     t.add_column("Arr p90",     justify="right")
     t.add_column("Surprise p90",justify="right")
+    t.add_column("Door mean",   justify="right")
     t.add_column("Door p90",    justify="right")
     t.add_column("Cancel%",     justify="right")
     t.add_column("Verdict")
@@ -554,18 +558,21 @@ def _print_recommendations(recs: list[dict]) -> None:
     for i, rec in enumerate(recs, 1):
         score = rec["score"]
         score_color = "green" if score >= 0.75 else ("yellow" if score >= 0.5 else "red")
-        arr_c = _color_delay((rec["arr_p90_min"] or 0) * 60)
-        sur_c = _color_delay((rec["delta_p90_min"] or 0) * 60)
-        door  = rec.get("door_p90_min")
+        arr_c  = _color_delay((rec["arr_p90_min"] or 0) * 60)
+        sur_c  = _color_delay((rec["delta_p90_min"] or 0) * 60)
+        door_mean = rec.get("door_mean_min")
+        door_p90  = rec.get("door_p90_min")
         t.add_row(
             str(i),
             _route_short(rec["route"]),
             rec["line"],
             f"[{score_color}]{score:.2f}[/{score_color}]",
             str(rec["count"]),
+            f"[{arr_c}]{rec['arr_mean_min']:.1f} min[/{arr_c}]",
             f"[{arr_c}]{rec['arr_p90_min']:.1f} min[/{arr_c}]",
             f"[{sur_c}]{rec['delta_p90_min']:.1f} min[/{sur_c}]",
-            f"{door:.0f} min" if door is not None else "[dim]--[/dim]",
+            f"{door_mean:.0f} min" if door_mean is not None else "[dim]--[/dim]",
+            f"{door_p90:.0f} min" if door_p90  is not None else "[dim]--[/dim]",
             f"{rec['cancel_pct']:.1f}%",
             rec["verdict"],
         )
