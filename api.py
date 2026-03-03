@@ -291,6 +291,13 @@ def _transit_legs(journey: dict) -> list[dict]:
     ]
 
 
+# Products allowed as any leg in a multi-leg journey.
+# Regional/suburban trains are the primary services; bus is permitted for SEV
+# (Schienenersatzverkehr) replacement connections.  National/long-distance
+# products (IC, ICE, FLX …) are explicitly excluded.
+_ALLOWED_JOURNEY_PRODUCTS = ALLOWED_PRODUCTS | {"bus"}
+
+
 def _transit_leg_count(journey: dict) -> int:
     return len(_transit_legs(journey))
 
@@ -323,6 +330,12 @@ def parse_journey_leg(
     """
     tlegs = _transit_legs(journey)
     if not tlegs:
+        return None
+
+    # Reject journeys that include a long-distance leg (FLX, IC, ICE …).
+    # Only regional/suburban trains and bus (SEV) are accepted.
+    if any((l.get("line") or {}).get("product") not in _ALLOWED_JOURNEY_PRODUCTS
+           for l in tlegs):
         return None
 
     if len(tlegs) == 1:
@@ -380,11 +393,20 @@ def parse_journey_leg(
         return None
 
     # For multi-leg journeys (e.g. connecting bus+rail), tag the line name with
-    # "+1" to keep stats separated from direct service.  When the connection is
-    # no longer needed, direct trains accumulate under the plain name ("RE4")
-    # while historical connection data stays under "RE4+1" — no cross-contamination.
+    # "+{connecting_leg}" so different connection types are kept separate in stats
+    # (e.g. "RE4+SEV123", "RE4+Bus456").  When direct service resumes, trains
+    # accumulate under the plain name ("RE4") with no cross-contamination.
     if len(tlegs) > 1:
-        line_name = f"{line_name}+1"
+        other_legs = [l for l in tlegs if l is not rail_leg]
+        if other_legs:
+            other_line = other_legs[0].get("line") or {}
+            other_name = (other_line.get("name") or "").replace(" ", "")
+            if not other_name:
+                # Fall back to product type (e.g. "bus", "suburban")
+                other_name = other_line.get("product") or "?"
+        else:
+            other_name = "?"
+        line_name = f"{line_name}+{other_name}"
 
     # Departure delay from origin leg; arrival delay from destination leg.
     # /journeys legs use departureDelay / arrivalDelay (may also have 'delay').
