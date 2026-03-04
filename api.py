@@ -291,11 +291,12 @@ def _transit_legs(journey: dict) -> list[dict]:
     ]
 
 
-# Products allowed as any leg in a multi-leg journey.
-# Regional/suburban trains are the primary services; bus is permitted for SEV
-# (Schienenersatzverkehr) replacement connections.  National/long-distance
-# products (IC, ICE, FLX …) are explicitly excluded.
-_ALLOWED_JOURNEY_PRODUCTS = ALLOWED_PRODUCTS | {"bus"}
+# Products that disqualify a journey entirely — long-distance commercial
+# services (IC, ICE, FLX …) that are not part of regional/suburban transport.
+# Using a blocklist rather than an allowlist so that unusual SEV products
+# (e.g. "taxi" for Schienenersatzverkehr dispatch, "tram" for city-rail SEV)
+# are not accidentally rejected.
+_REJECTED_JOURNEY_PRODUCTS = {"national", "nationalExpress"}
 
 
 def _transit_leg_count(journey: dict) -> int:
@@ -333,8 +334,9 @@ def parse_journey_leg(
         return None
 
     # Reject journeys that include a long-distance leg (FLX, IC, ICE …).
-    # Only regional/suburban trains and bus (SEV) are accepted.
-    if any((l.get("line") or {}).get("product") not in _ALLOWED_JOURNEY_PRODUCTS
+    # We blocklist only national/nationalExpress so that unusual SEV products
+    # (taxi, tram, …) are not accidentally filtered out.
+    if any((l.get("line") or {}).get("product") in _REJECTED_JOURNEY_PRODUCTS
            for l in tlegs):
         return None
 
