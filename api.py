@@ -103,7 +103,7 @@ async def _get(
 # Trip key extraction
 # ---------------------------------------------------------------------------
 _ZI_RE = re.compile(r"#ZI#([^#]+)#")
-_DA_RE = re.compile(r"#DA#(\d{6})#")
+_DA_RE = re.compile(r"#DA#(\d{5,6})#")  # 5 digits when day < 10 (HAFAS omits leading zero)
 
 
 def make_trip_key(trip_id: str) -> str:
@@ -334,9 +334,12 @@ def parse_journey_leg(
         return None
 
     # Reject journeys that include a long-distance leg (FLX, IC, ICE …).
-    # We blocklist only national/nationalExpress so that unusual SEV products
-    # (taxi, tram, …) are not accidentally filtered out.
+    # Product blocklist covers IC/ICE; name-prefix blocklist covers FlixTrain
+    # whose HAFAS product type is not consistently "national"/"nationalExpress".
     if any((l.get("line") or {}).get("product") in _REJECTED_JOURNEY_PRODUCTS
+           for l in tlegs):
+        return None
+    if any((l.get("line") or {}).get("name", "").replace(" ", "").startswith("FLX")
            for l in tlegs):
         return None
 
@@ -416,6 +419,12 @@ def parse_journey_leg(
     if dep_delay is None:
         dep_delay = tlegs[0].get("delay")
     arr_delay = tlegs[-1].get("arrivalDelay")
+    # If planned_arr was rejected (null or implausible travel time), the HAFAS
+    # arrival delay for the last leg is unreliable — it may belong to a different
+    # route segment or an impossible connection.  Null it out to prevent spurious
+    # negative surprise deltas in stats.
+    if planned_arr_str is None:
+        arr_delay = None
 
     cancelled = bool(journey.get("cancelled") or any(l.get("cancelled") for l in tlegs))
 

@@ -267,24 +267,31 @@ def rank_recommendations(stats: dict) -> list[dict]:
     for route, lines in stats.items():
         for line, data in lines.items():
             s = data["s"]
-            arr_p90   = s.get("arr_p90_s")   or 0.0
+            arr_p90_s = s.get("arr_p90_s")    # None = no arrival data yet
             delta_p90 = s.get("delta_p90_s") or 0.0
             cancel    = s.get("cancel_rate_pct") or 0.0
 
+            no_arr_data = arr_p90_s is None
+
+            # Score: arrival component is 0 when no data (can't reward unknown).
+            arr_p90_for_score = arr_p90_s if arr_p90_s is not None else 0.0
             score = (
-                0.5 * max(0.0, 1.0 - arr_p90 / 600.0)
+                (0.5 * max(0.0, 1.0 - arr_p90_for_score / 600.0) if not no_arr_data else 0.0)
                 + 0.3 * max(0.0, 1.0 - delta_p90 / 600.0)
                 + 0.2 * max(0.0, 1.0 - cancel / 100.0)
             )
             score = max(0.0, min(1.0, score))
 
-            arr_mean_min  = (s.get("arr_mean_s")  or 0) / 60
-            arr_p90_min   = arr_p90 / 60
+            arr_mean_s   = s.get("arr_mean_s")
+            arr_mean_min = arr_mean_s / 60 if arr_mean_s is not None else None
+            arr_p90_min  = arr_p90_s  / 60 if arr_p90_s  is not None else None
             delta_p90_min = delta_p90 / 60
             door_p90      = s.get("door_p90_min")
             cancel_str    = f"{cancel:.1f}%"
 
-            if score >= 0.85:
+            if no_arr_data:
+                verdict = "Pending — no arrival data yet; score excludes arrival component."
+            elif score >= 0.85:
                 verdict = "Excellent — arrives on time, minimal surprises en route."
             elif score >= 0.70:
                 door_str = f", door-to-door p90 {door_p90:.0f} min" if door_p90 else ""
@@ -558,8 +565,10 @@ def _print_recommendations(recs: list[dict]) -> None:
     for i, rec in enumerate(recs, 1):
         score = rec["score"]
         score_color = "green" if score >= 0.75 else ("yellow" if score >= 0.5 else "red")
-        arr_c  = _color_delay((rec["arr_p90_min"] or 0) * 60)
-        sur_c  = _color_delay((rec["delta_p90_min"] or 0) * 60)
+        arr_mean  = rec["arr_mean_min"]
+        arr_p90   = rec["arr_p90_min"]
+        arr_c     = _color_delay((arr_p90 or 0) * 60)
+        sur_c     = _color_delay((rec["delta_p90_min"] or 0) * 60)
         door_mean = rec.get("door_mean_min")
         door_p90  = rec.get("door_p90_min")
         t.add_row(
@@ -568,11 +577,11 @@ def _print_recommendations(recs: list[dict]) -> None:
             rec["line"],
             f"[{score_color}]{score:.2f}[/{score_color}]",
             str(rec["count"]),
-            f"[{arr_c}]{rec['arr_mean_min']:.1f} min[/{arr_c}]",
-            f"[{arr_c}]{rec['arr_p90_min']:.1f} min[/{arr_c}]",
+            f"[{arr_c}]{arr_mean:.1f} min[/{arr_c}]" if arr_mean is not None else "[dim]--[/dim]",
+            f"[{arr_c}]{arr_p90:.1f} min[/{arr_c}]"  if arr_p90  is not None else "[dim]--[/dim]",
             f"[{sur_c}]{rec['delta_p90_min']:.1f} min[/{sur_c}]",
             f"{door_mean:.0f} min" if door_mean is not None else "[dim]--[/dim]",
-            f"{door_p90:.0f} min" if door_p90  is not None else "[dim]--[/dim]",
+            f"{door_p90:.0f} min"  if door_p90  is not None else "[dim]--[/dim]",
             f"{rec['cancel_pct']:.1f}%",
             rec["verdict"],
         )
