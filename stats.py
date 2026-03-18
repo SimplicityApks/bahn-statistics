@@ -263,9 +263,13 @@ def rank_recommendations(stats: dict) -> list[dict]:
 
     Clamp score to [0, 1]. Returns list sorted by score descending.
     """
+    _MIN_COUNT = 5
+
     recs = []
     for route, lines in stats.items():
         for line, data in lines.items():
+            if data["count"] < _MIN_COUNT:
+                continue
             s = data["s"]
             arr_p90_s = s.get("arr_p90_s")    # None = no arrival data yet
             delta_p90 = s.get("delta_p90_s") or 0.0
