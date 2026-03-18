@@ -101,6 +101,13 @@ def cmd_scrape(args) -> int:
     return 0
 
 
+def cmd_web(args) -> int:
+    """Start the web dashboard server."""
+    import uvicorn
+    uvicorn.run("web:app", host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
 def cmd_stats(args) -> int:
     """Compute and display statistics."""
     conn = init_db(DB_PATH)
@@ -181,6 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verify station IDs against the live API and exit.",
     )
 
+    # web
+    p_web = sub.add_parser(
+        "web",
+        help="Start the web dashboard server.",
+    )
+    p_web.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+    p_web.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000).")
+    p_web.add_argument("--reload", action="store_true", help="Enable auto-reload (dev mode).")
+
     return parser
 
 
@@ -196,6 +212,7 @@ def main() -> None:
         "scrape": cmd_scrape,
         "stats": cmd_stats,
         "verify": cmd_verify,
+        "web": cmd_web,
     }
 
     handler = dispatch.get(args.cmd)
