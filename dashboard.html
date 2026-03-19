@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DB Bahn Statistics</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -67,6 +69,26 @@ tr:hover td { background: #1e1e35; }
 .error   { color: #f44336; }
 #lastUpdated { color: #8888aa; font-size: 0.85em; }
 .verdict-cell { text-align: left !important; max-width: 300px; white-space: normal !important; }
+/* ---- Leaflet dark theme ---- */
+.leaflet-popup-content-wrapper {
+  background: #1e1e35; color: #d0d0e0;
+  border: 1px solid #444; box-shadow: 0 3px 14px rgba(0,0,0,0.6);
+  font-family: 'Courier New', Courier, monospace; font-size: 12px;
+}
+.leaflet-popup-tip { background: #1e1e35; }
+.leaflet-popup-close-button { color: #888 !important; }
+.leaflet-popup-content b { color: #88b4f7; }
+.leaflet-container { background: #0d0d18; }
+.map-station-label {
+  background: transparent !important; border: none !important; box-shadow: none !important;
+  color: #cccce8 !important; font-family: 'Courier New', monospace !important;
+  font-size: 11px !important; font-weight: bold !important;
+  text-shadow: 0 0 3px #000, 0 0 3px #000 !important;
+  white-space: nowrap !important; padding: 0 !important;
+}
+.map-station-label::before { display: none !important; }
+#routeMap { height: 400px; border-radius: 6px; }
+.map-legend { display:flex; gap:18px; font-size:0.8em; margin-top:6px; align-items:center; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -109,6 +131,17 @@ tr:hover td { background: #1e1e35; }
 <div class="section">
   <h2>Recommendations</h2>
   <div id="recsTable" class="loading">Loading…</div>
+</div>
+
+<div class="section">
+  <h2>Route Map — station &amp; line delays</h2>
+  <div id="routeMap"></div>
+  <div class="map-legend">
+    <span><span style="color:#4caf50">━━</span> ≤1 min</span>
+    <span><span style="color:#ffa000">━━</span> ≤5 min</span>
+    <span><span style="color:#f44336">━━</span> &gt;5 min</span>
+    <span class="dim">━━ morning &nbsp; ╌╌ evening &nbsp;|&nbsp; line colour = mean arr delay &nbsp;|&nbsp; click for details</span>
+  </div>
 </div>
 
 <div class="charts-row">
@@ -433,10 +466,149 @@ async function loadHistogram() {
   });
 }
 
+/* ---- map ---- */
+const MAP_STATIONS = {
+  DDF: {lat: 51.2195, lon: 6.7942, name: 'Düsseldorf Hbf'},
+  ESS: {lat: 51.4508, lon: 7.0131, name: 'Essen Hbf'},
+  AAH: {lat: 50.7681, lon: 6.0910, name: 'Aachen Hbf'},
+  WUP: {lat: 51.2543, lon: 7.1498, name: 'Wuppertal Hbf'},
+  BON: {lat: 50.7320, lon: 7.0990, name: 'Bonn Hbf'},
+};
+
+let leafletMap = null;
+let mapDataLayer = null;   // L.layerGroup — cleared & rebuilt on each refresh
+
+function initLeafletMap() {
+  if (leafletMap) return;
+  leafletMap = L.map('routeMap', {zoomControl: true}).setView([51.05, 6.85], 9);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright" style="color:#aaa">OSM</a> © <a href="https://carto.com/attributions" style="color:#aaa">CARTO</a>',
+    subdomains: 'abcd',
+    detectRetina: true,
+    maxZoom: 16,
+  }).addTo(leafletMap);
+  mapDataLayer = L.layerGroup().addTo(leafletMap);
+}
+
+function mapDelayColor(seconds) {
+  if (seconds === null || seconds === undefined) return '#888888';
+  const m = seconds / 60;
+  if (m <= 1)  return '#4caf50';
+  if (m <= 5)  return '#ffa000';
+  return '#f44336';
+}
+
+/* Returns [dLat, dLon] perpendicular offset for a line from pt1→pt2.
+   dist is in degrees of latitude (≈111 km/deg). The formula accounts for
+   the cos(lat) compression of longitude so the visual offset is symmetric. */
+function perpOffset(lat1, lon1, lat2, lon2, dist) {
+  const cosLat = Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+  const dlat = lat2 - lat1;
+  const dlon = (lon2 - lon1) * cosLat;
+  const len  = Math.sqrt(dlat * dlat + dlon * dlon);
+  if (len < 1e-9) return [0, 0];
+  // rotate 90° counter-clockwise: (-dlon, dlat) in equirectangular space
+  return [-dlon / len * dist, dlat / len * dist / cosLat];
+}
+
+function fmtDelaySec(s) {
+  return s !== null && s !== undefined ? (s / 60).toFixed(1) + ' min' : '--';
+}
+
+async function loadMap() {
+  initLeafletMap();
+
+  const p = getParams();  // only carries ?since=… — route filter is visual only
+  const res = await fetch('/api/map?' + p);
+  const data = await res.json();
+
+  mapDataLayer.clearLayers();
+
+  const selectedRoute = getRoute();
+
+  // ---- route polylines ----
+  for (const routeId of ROUTE_ORDER) {
+    const route = data.routes[routeId];
+    if (!route || route.count === 0) continue;
+
+    const from = MAP_STATIONS[route.from_id];
+    const to   = MAP_STATIONS[route.to_id];
+    if (!from || !to) continue;
+
+    const isMorning = routeId === 'morning' || routeId.endsWith('_morning');
+    const sign = isMorning ? 1 : -1;
+    const [oLat, oLon] = perpOffset(from.lat, from.lon, to.lat, to.lon, 0.025);
+
+    const latlngs = [
+      [from.lat + sign * oLat, from.lon + sign * oLon],
+      [to.lat   + sign * oLat, to.lon   + sign * oLon],
+    ];
+
+    const highlighted = !selectedRoute || selectedRoute === routeId;
+    const color = mapDelayColor(route.mean_arr_delay_s);
+
+    const line = L.polyline(latlngs, {
+      color,
+      weight:    highlighted ? 5   : 2.5,
+      opacity:   highlighted ? 0.9 : 0.25,
+      dashArray: isMorning   ? null : '9 5',
+    });
+
+    const lines = route.line_names.length ? route.line_names.join(', ') : '—';
+    line.bindPopup(
+      `<b>${route.label}</b><br>` +
+      `Lines: ${lines}<br>` +
+      `Journeys: ${route.count}<br>` +
+      `Dep delay (mean): ${fmtDelaySec(route.mean_dep_delay_s)}<br>` +
+      `Arr delay (mean): ${fmtDelaySec(route.mean_arr_delay_s)}`
+    );
+
+    mapDataLayer.addLayer(line);
+  }
+
+  // ---- station circles (drawn on top of lines) ----
+  for (const [sid, st] of Object.entries(data.stations)) {
+    const total = (st.dep_count || 0) + (st.arr_count || 0);
+    if (total === 0) continue;
+
+    const color  = mapDelayColor(st.overall_mean_s);
+    const radius = Math.max(7, Math.min(13, 7 + Math.log10(total + 1) * 3));
+
+    const circle = L.circleMarker([st.lat, st.lon], {
+      radius,
+      color:       '#1a1a30',
+      fillColor:   color,
+      fillOpacity: 0.92,
+      weight:      2,
+    });
+
+    circle.bindPopup(
+      `<b>${st.name}</b><br>` +
+      `As origin &nbsp;&nbsp;&nbsp; dep delay: ${fmtDelaySec(st.mean_dep_delay_s)} (${st.dep_count} journeys)<br>` +
+      `As destination arr delay: ${fmtDelaySec(st.mean_arr_delay_s)} (${st.arr_count} journeys)`
+    );
+
+    mapDataLayer.addLayer(circle);
+
+    // permanent label above the circle
+    const label = L.marker([st.lat, st.lon], {
+      icon: L.divIcon({
+        html: `<span style="color:${color}">${sid}</span>`,
+        className: 'map-station-label',
+        iconSize:   [36, 14],
+        iconAnchor: [18, radius + 16],
+      }),
+      interactive: false,
+      zIndexOffset: 1000,
+    });
+    mapDataLayer.addLayer(label);
+  }
+}
+
 /* ---- main refresh ---- */
 async function loadAll() {
   try {
-    await Promise.all([loadSummary(), loadTrend(), loadSlots(), loadHistogram()]);
+    await Promise.all([loadSummary(), loadTrend(), loadSlots(), loadHistogram(), loadMap()]);
     document.getElementById('lastUpdated').textContent =
       'Updated: ' + new Date().toLocaleTimeString();
   } catch (e) {

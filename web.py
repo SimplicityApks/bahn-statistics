@@ -15,6 +15,7 @@ _HTML_FILE = Path(__file__).parent / "dashboard.html"
 from config import DB_PATH
 from database import get_journeys_for_stats
 from stats import (
+    ROUTE_LABELS,
     ROUTE_ORDER,
     _ROUTE_SHORT,
     compute_slot_stats,
@@ -22,6 +23,29 @@ from stats import (
     get_date_range,
     rank_recommendations,
 )
+
+# ---------------------------------------------------------------------------
+# Map configuration
+# ---------------------------------------------------------------------------
+STATION_COORDS: dict = {
+    "DDF": {"lat": 51.2195, "lon": 6.7942, "name": "Düsseldorf Hbf"},
+    "ESS": {"lat": 51.4508, "lon": 7.0131, "name": "Essen Hbf"},
+    "AAH": {"lat": 50.7681, "lon": 6.0910, "name": "Aachen Hbf"},
+    "WUP": {"lat": 51.2543, "lon": 7.1498, "name": "Wuppertal Hbf"},
+    "BON": {"lat": 50.7320, "lon": 7.0990, "name": "Bonn Hbf"},
+}
+
+# (origin_id, destination_id) for each route
+ROUTE_STATIONS: dict = {
+    "morning":           ("DDF", "ESS"),
+    "evening":           ("ESS", "DDF"),
+    "aachen_morning":    ("AAH", "DDF"),
+    "aachen_evening":    ("DDF", "AAH"),
+    "wuppertal_morning": ("WUP", "DDF"),
+    "wuppertal_evening": ("DDF", "WUP"),
+    "bonn_morning":      ("BON", "DDF"),
+    "bonn_evening":      ("DDF", "BON"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +223,78 @@ async def api_recent(
         {k: j.get(k) for k in display_fields}
         for j in journeys[:limit]
     ]
+
+
+@app.get("/api/map")
+async def api_map(
+    request: Request,
+    since: Optional[str] = Query(None),
+):
+    conn: sqlite3.Connection = request.app.state.conn
+    journeys = get_journeys_for_stats(conn, since_date=since)
+
+    # Per-route accumulators
+    route_dep: dict = defaultdict(list)
+    route_arr: dict = defaultdict(list)
+    route_counts: dict = defaultdict(int)
+    route_lines: dict = defaultdict(set)
+
+    # Per-station accumulators (as origin / as destination)
+    station_dep: dict = defaultdict(list)
+    station_arr: dict = defaultdict(list)
+
+    for j in journeys:
+        if j.get("cancelled"):
+            continue
+        route = j.get("route")
+        if route not in ROUTE_STATIONS:
+            continue
+
+        from_id, to_id = ROUTE_STATIONS[route]
+        route_counts[route] += 1
+        route_lines[route].add(j.get("line_name", "?"))
+
+        dep_delay = j.get("dep_delay_s")
+        arr_delay = j.get("arr_delay_s")
+
+        if dep_delay is not None:
+            route_dep[route].append(float(dep_delay))
+            station_dep[from_id].append(float(dep_delay))
+        if arr_delay is not None:
+            route_arr[route].append(float(arr_delay))
+            station_arr[to_id].append(float(arr_delay))
+
+    # Build routes payload
+    routes_out: dict = {}
+    for route, (from_id, to_id) in ROUTE_STATIONS.items():
+        dd = route_dep.get(route, [])
+        ad = route_arr.get(route, [])
+        routes_out[route] = {
+            "from_id": from_id,
+            "to_id": to_id,
+            "label": ROUTE_LABELS.get(route, route),
+            "count": route_counts.get(route, 0),
+            "line_names": sorted(route_lines.get(route, set())),
+            "mean_dep_delay_s": round(statistics.mean(dd), 1) if dd else None,
+            "mean_arr_delay_s": round(statistics.mean(ad), 1) if ad else None,
+        }
+
+    # Build stations payload
+    stations_out: dict = {}
+    for sid, coords in STATION_COORDS.items():
+        dd = station_dep.get(sid, [])
+        ad = station_arr.get(sid, [])
+        all_d = ad + dd  # prefer arr for overall colour; it's what hurts the rider
+        stations_out[sid] = {
+            **coords,
+            "mean_dep_delay_s": round(statistics.mean(dd), 1) if dd else None,
+            "dep_count": len(dd),
+            "mean_arr_delay_s": round(statistics.mean(ad), 1) if ad else None,
+            "arr_count": len(ad),
+            "overall_mean_s": round(statistics.mean(all_d), 1) if all_d else None,
+        }
+
+    return {"stations": stations_out, "routes": routes_out}
 
 
 @app.get("/", response_class=HTMLResponse)
