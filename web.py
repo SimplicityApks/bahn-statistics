@@ -253,11 +253,9 @@ async def api_map(
     conn: sqlite3.Connection = request.app.state.conn
     journeys = get_journeys_for_stats(conn, since_date=since)
 
-    # Per-route accumulators
-    route_dep: dict = defaultdict(list)
-    route_arr: dict = defaultdict(list)
-    route_counts: dict = defaultdict(int)
-    route_lines: dict = defaultdict(set)
+    # Per-(route, line) accumulators
+    rl_dep: dict = defaultdict(list)   # (route, line) -> [dep_delay_s, ...]
+    rl_arr: dict = defaultdict(list)   # (route, line) -> [arr_delay_s, ...]
 
     # Per-station accumulators (as origin / as destination)
     station_dep: dict = defaultdict(list)
@@ -271,32 +269,42 @@ async def api_map(
             continue
 
         from_id, to_id = ROUTE_STATIONS[route]
-        route_counts[route] += 1
-        route_lines[route].add(j.get("line_name", "?"))
+        line = j.get("line_name", "?")
+        key = (route, line)
 
         dep_delay = j.get("dep_delay_s")
         arr_delay = j.get("arr_delay_s")
 
         if dep_delay is not None:
-            route_dep[route].append(float(dep_delay))
+            rl_dep[key].append(float(dep_delay))
             station_dep[from_id].append(float(dep_delay))
         if arr_delay is not None:
-            route_arr[route].append(float(arr_delay))
+            rl_arr[key].append(float(arr_delay))
             station_arr[to_id].append(float(arr_delay))
 
-    # Build routes payload
+    # Build routes payload — nested per train line, filtered to _MIN_COUNT
     routes_out: dict = {}
     for route, (from_id, to_id) in ROUTE_STATIONS.items():
-        dd = route_dep.get(route, [])
-        ad = route_arr.get(route, [])
+        all_keys = {k for k in list(rl_dep) + list(rl_arr) if k[0] == route}
+        lines_out: dict = {}
+        for (_, line) in sorted(all_keys):
+            dd = rl_dep.get((route, line), [])
+            ad = rl_arr.get((route, line), [])
+            count = max(len(dd), len(ad))
+            if count < _MIN_COUNT:
+                continue
+            lines_out[line] = {
+                "count": count,
+                "mean_dep_delay_s": round(statistics.mean(dd), 1) if dd else None,
+                "mean_arr_delay_s": round(statistics.mean(ad), 1) if ad else None,
+            }
+        if not lines_out:
+            continue
         routes_out[route] = {
             "from_id": from_id,
             "to_id": to_id,
             "label": ROUTE_LABELS.get(route, route),
-            "count": route_counts.get(route, 0),
-            "line_names": sorted(route_lines.get(route, set())),
-            "mean_dep_delay_s": round(statistics.mean(dd), 1) if dd else None,
-            "mean_arr_delay_s": round(statistics.mean(ad), 1) if ad else None,
+            "lines": lines_out,
         }
 
     # Build stations payload

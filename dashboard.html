@@ -191,6 +191,13 @@ const ROUTE_LABEL = {
   bonn_morning: 'BON→DDF (morning)', bonn_evening: 'DDF→BON (evening)',
 };
 
+const REVERSE_ROUTE = {
+  morning: 'evening', evening: 'morning',
+  aachen_morning: 'aachen_evening', aachen_evening: 'aachen_morning',
+  wuppertal_morning: 'wuppertal_evening', wuppertal_evening: 'wuppertal_morning',
+  bonn_morning: 'bonn_evening', bonn_evening: 'bonn_morning',
+};
+
 /* ---- formatting helpers ---- */
 function fmt(v, decimals=1) {
   if (v === null || v === undefined) return '<span class="dim">--</span>';
@@ -535,82 +542,142 @@ async function loadMap() {
 
   const selectedRoute = getRoute();
 
-  // ---- route polylines ----
+  // ---- one pair of half-polylines per (route, train line) ----
+  // Perpendicular offset = base (±0.025° morning/evening) + per-line fan (0.012° apart).
+  // Negative dist in perpOffset() reverses direction, so evening lines go the other side.
   for (const routeId of ROUTE_ORDER) {
     const route = data.routes[routeId];
-    if (!route || route.count < 5) continue;
+    if (!route) continue;
 
     const from = MAP_STATIONS[route.from_id];
     const to   = MAP_STATIONS[route.to_id];
     if (!from || !to) continue;
 
-    const isMorning = routeId === 'morning' || routeId.endsWith('_morning');
-    const sign = isMorning ? 1 : -1;
-    const [oLat, oLon] = perpOffset(from.lat, from.lon, to.lat, to.lon, 0.025);
+    const lineEntries = Object.entries(route.lines || {});
+    if (!lineEntries.length) continue;
 
-    const latlngs = [
-      [from.lat + sign * oLat, from.lon + sign * oLon],
-      [to.lat   + sign * oLat, to.lon   + sign * oLon],
-    ];
-
+    const isMorning   = routeId === 'morning' || routeId.endsWith('_morning');
+    const baseSign    = isMorning ? 1 : -1;
+    const N           = lineEntries.length;
     const highlighted = !selectedRoute || selectedRoute === routeId;
-    const color = mapDelayColor(route.mean_arr_delay_s);
+    const w           = highlighted ? 4   : 2;
+    const opa         = highlighted ? 0.9 : 0.22;
+    const dash        = isMorning ? null : '7 4';
 
-    const line = L.polyline(latlngs, {
-      color,
-      weight:    highlighted ? 5   : 2.5,
-      opacity:   highlighted ? 0.9 : 0.25,
-      dashArray: isMorning   ? null : '9 5',
+    lineEntries.forEach(([lineName, ld], i) => {
+      // Fan the lines: centre of fan sits at ±0.025°, lines spaced 0.012° apart
+      const fanOffset  = (i - (N - 1) / 2) * 0.012;
+      const totalDist  = baseSign * 0.025 + fanOffset;
+      const [oLat, oLon] = perpOffset(from.lat, from.lon, to.lat, to.lon, totalDist);
+
+      const fromPt = [from.lat + oLat, from.lon + oLon];
+      const toPt   = [to.lat   + oLat, to.lon   + oLon];
+      const midPt  = [(fromPt[0] + toPt[0]) / 2, (fromPt[1] + toPt[1]) / 2];
+
+      const depColor = mapDelayColor(ld.mean_dep_delay_s);
+      const arrColor = mapDelayColor(ld.mean_arr_delay_s);
+
+      const reverseRouteId = REVERSE_ROUTE[routeId];
+      const revRoute       = reverseRouteId ? data.routes[reverseRouteId] : null;
+      const reverseLabel   = (revRoute && revRoute.label) || route.label;
+      const revLd          = revRoute && revRoute.lines ? revRoute.lines[lineName] : null;
+      const revDepColor    = mapDelayColor(revLd ? revLd.mean_dep_delay_s : null);
+      const revArrColor    = mapDelayColor(revLd ? revLd.mean_arr_delay_s : null);
+
+      // Dep half: near `from` — uses this route's own stats
+      const popupDep =
+        `<b>${route.label}</b><br>` +
+        `Line: <b style="color:${depColor}">${lineName}</b> &nbsp; N=${ld.count}<br>` +
+        `<b>Dep (${from.name}): <span style="color:${depColor}">${fmtDelaySec(ld.mean_dep_delay_s)}</span></b><br>` +
+        `Arr (${to.name}): <span style="color:${arrColor}">${fmtDelaySec(ld.mean_arr_delay_s)}</span>`;
+      // Arr half: near `to` — uses reverse route's actual stats (morning data for morning line, etc.)
+      const popupArr = revLd
+        ? `<b>${reverseLabel}</b><br>` +
+          `Line: <b style="color:${revDepColor}">${lineName}</b> &nbsp; N=${revLd.count}<br>` +
+          `<b>Dep (${to.name}): <span style="color:${revDepColor}">${fmtDelaySec(revLd.mean_dep_delay_s)}</span></b><br>` +
+          `Arr (${from.name}): <span style="color:${revArrColor}">${fmtDelaySec(revLd.mean_arr_delay_s)}</span>`
+        : `<b>${reverseLabel}</b><br>` +
+          `Line: <b>${lineName}</b><br>` +
+          `<span class="dim">No data for this direction</span>`;
+
+      // First half: dep-delay colour (at origin side)
+      const seg1 = L.polyline([fromPt, midPt], {color: depColor, weight: w, opacity: opa, dashArray: dash});
+      // Second half: arr-delay colour (at destination side)
+      const seg2 = L.polyline([midPt,  toPt],  {color: arrColor, weight: w, opacity: opa, dashArray: dash});
+      seg1.bindPopup(popupDep);
+      seg2.bindPopup(popupArr);
+      mapDataLayer.addLayer(seg1);
+      mapDataLayer.addLayer(seg2);
+
+      // Line-name label at midpoint (only when visible enough to read)
+      if (highlighted) {
+        const lbl = L.marker(midPt, {
+          icon: L.divIcon({
+            html: `<span style="font-size:9px;font-family:monospace;font-weight:bold;` +
+                  `color:#fff;text-shadow:0 0 2px #000;` +
+                  `background:rgba(0,0,0,0.45);padding:1px 3px;border-radius:2px;` +
+                  `white-space:nowrap;pointer-events:none">${lineName}</span>`,
+            className: '',
+            iconSize: [0, 0], iconAnchor: [0, 0],
+          }),
+          interactive: false,
+          zIndexOffset: 600,
+        });
+        mapDataLayer.addLayer(lbl);
+      }
     });
-
-    const lines = route.line_names.length ? route.line_names.join(', ') : '—';
-    line.bindPopup(
-      `<b>${route.label}</b><br>` +
-      `Lines: ${lines}<br>` +
-      `Journeys: ${route.count}<br>` +
-      `Dep delay (mean): ${fmtDelaySec(route.mean_dep_delay_s)}<br>` +
-      `Arr delay (mean): ${fmtDelaySec(route.mean_arr_delay_s)}`
-    );
-
-    mapDataLayer.addLayer(line);
   }
 
-  // ---- station circles (drawn on top of lines) ----
+  // ---- station circles: left half = dep delay, right half = arr delay ----
   for (const [sid, st] of Object.entries(data.stations)) {
     const total = (st.dep_count || 0) + (st.arr_count || 0);
     if (total === 0) continue;
 
-    const color  = mapDelayColor(st.overall_mean_s);
-    const radius = Math.max(7, Math.min(13, 7 + Math.log10(total + 1) * 3));
+    const depColor = st.mean_dep_delay_s !== null ? mapDelayColor(st.mean_dep_delay_s) : '#333344';
+    const arrColor = st.mean_arr_delay_s !== null ? mapDelayColor(st.mean_arr_delay_s) : '#333344';
+    const hasDep   = st.mean_dep_delay_s !== null;
+    const hasArr   = st.mean_arr_delay_s !== null;
 
-    const circle = L.circleMarker([st.lat, st.lon], {
-      radius,
-      color:       '#1a1a30',
-      fillColor:   color,
-      fillOpacity: 0.92,
-      weight:      2,
+    const bg = (hasDep && hasArr)
+      ? `linear-gradient(to right, ${depColor} 50%, ${arrColor} 50%)`
+      : (hasDep ? depColor : arrColor);
+
+    const size = Math.max(16, Math.min(24, 16 + Math.log10(total + 1) * 3));
+
+    const circle = L.marker([st.lat, st.lon], {
+      icon: L.divIcon({
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;` +
+              `background:${bg};border:2px solid #1a1a30;` +
+              `box-shadow:0 0 5px rgba(0,0,0,0.6)"></div>`,
+        className: '',
+        iconSize:   [size, size],
+        iconAnchor: [size / 2, size / 2],
+      }),
+      zIndexOffset: 500,
     });
 
     circle.bindPopup(
       `<b>${st.name}</b><br>` +
-      `As origin &nbsp;&nbsp;&nbsp; dep delay: ${fmtDelaySec(st.mean_dep_delay_s)} (${st.dep_count} journeys)<br>` +
-      `As destination arr delay: ${fmtDelaySec(st.mean_arr_delay_s)} (${st.arr_count} journeys)`
+      `<span style="color:${depColor}">◀ left</span> as origin &nbsp; dep delay: ` +
+        `${fmtDelaySec(st.mean_dep_delay_s)} (${st.dep_count}×)<br>` +
+      `<span style="color:${arrColor}">right ▶</span> as destination &nbsp; arr delay: ` +
+        `${fmtDelaySec(st.mean_arr_delay_s)} (${st.arr_count}×)`
     );
-
     mapDataLayer.addLayer(circle);
 
-    // permanent label above the circle
-    const label = L.marker([st.lat, st.lon], {
+    // Station ID label above circle
+    const lbl = L.marker([st.lat, st.lon], {
       icon: L.divIcon({
-        html: `<span style="color:${color}">${sid}</span>`,
-        className: 'map-station-label',
-        iconSize:   [36, 14],
-        iconAnchor: [18, radius + 16],
+        html: `<span style="font-size:11px;font-family:monospace;font-weight:bold;` +
+              `color:#cccce8;text-shadow:0 0 3px #000,0 0 3px #000;white-space:nowrap">${sid}</span>`,
+        className: '',
+        iconSize:   [28, 14],
+        iconAnchor: [14, size / 2 + 16],
       }),
       interactive: false,
       zIndexOffset: 1000,
     });
-    mapDataLayer.addLayer(label);
+    mapDataLayer.addLayer(lbl);
   }
 }
 
