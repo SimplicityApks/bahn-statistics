@@ -74,16 +74,20 @@ HIST_LABELS = ["<1", "1-2", "2-3", "3-4", "4-5", "5-6", "6-7", "7-8", "8-10", "1
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+_MIN_COUNT = 5  # mirror stats.py rank_recommendations threshold
+
 def _strip_stats(stats: dict) -> dict:
-    """Remove bulk list fields from compute_stats output."""
+    """Remove bulk list fields and low-count lines from compute_stats output."""
     result: dict = {}
     for route, lines in stats.items():
-        result[route] = {}
-        for line, data in lines.items():
-            result[route][line] = {
-                k: v for k, v in data.items()
-                if k not in ("dep_delays", "arr_delays", "journey_deltas", "travel_pairs")
-            }
+        filtered = {
+            line: {k: v for k, v in data.items()
+                   if k not in ("dep_delays", "arr_delays", "journey_deltas", "travel_pairs")}
+            for line, data in lines.items()
+            if data["count"] >= _MIN_COUNT
+        }
+        if filtered:
+            result[route] = filtered
     return result
 
 
@@ -101,9 +105,12 @@ def _build_trend(journeys: list[dict], route: str) -> dict:
 
     all_dates = sorted(by_date_line.keys())
     all_lines: set = set()
+    line_counts: dict = defaultdict(int)
     for date_data in by_date_line.values():
-        all_lines.update(date_data.keys())
-    sorted_lines = sorted(all_lines)
+        for line, vals in date_data.items():
+            all_lines.add(line)
+            line_counts[line] += len(vals)
+    sorted_lines = sorted(l for l in all_lines if line_counts[l] >= _MIN_COUNT)
 
     series: dict = {}
     for line in sorted_lines:
@@ -178,7 +185,20 @@ async def api_slots(
 ):
     conn: sqlite3.Connection = request.app.state.conn
     journeys = get_journeys_for_stats(conn, route=route, since_date=since)
-    return compute_slot_stats(journeys)
+    slot_stats = compute_slot_stats(journeys)
+
+    # Count qualifying journeys per (route, line) — same filter compute_slot_stats uses
+    counts: dict = defaultdict(lambda: defaultdict(int))
+    for j in journeys:
+        if not j.get("cancelled") and j.get("arr_delay_s") is not None:
+            counts[j["route"]][j["line_name"]] += 1
+
+    # Drop lines below the threshold; drop routes that become empty
+    return {
+        r: {line: slots for line, slots in lines.items() if counts[r][line] >= _MIN_COUNT}
+        for r, lines in slot_stats.items()
+        if any(counts[r][line] >= _MIN_COUNT for line in lines)
+    }
 
 
 @app.get("/api/trend")

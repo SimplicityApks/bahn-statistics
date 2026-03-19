@@ -529,7 +529,7 @@ async function loadMap() {
   // ---- route polylines ----
   for (const routeId of ROUTE_ORDER) {
     const route = data.routes[routeId];
-    if (!route || route.count === 0) continue;
+    if (!route || route.count < 5) continue;
 
     const from = MAP_STATIONS[route.from_id];
     const to   = MAP_STATIONS[route.to_id];
