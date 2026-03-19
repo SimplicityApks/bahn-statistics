@@ -51,10 +51,13 @@ th:first-child { text-align: left; }
 td { padding: 4px 8px; text-align: right; border-bottom: 1px solid #1a1a2e; white-space: nowrap; }
 td:first-child { text-align: left; font-weight: bold; }
 tr:hover td { background: #1e1e35; }
-.green  { color: #4caf50; }
-.amber  { color: #ffa000; }
-.red    { color: #f44336; }
-.dim    { color: #666; }
+.green   { color: #4caf50; }
+.amber   { color: #ffa000; }
+.orange  { color: #ff6d00; }
+.red     { color: #e53935; }
+.darkred { color: #c62828; }
+.purple  { color: #ab47bc; }
+.dim     { color: #666; }
 .sg { color: #4caf50; font-weight: bold; }
 .sa { color: #ffa000; font-weight: bold; }
 .sr { color: #f44336; font-weight: bold; }
@@ -139,7 +142,10 @@ tr:hover td { background: #1e1e35; }
   <div class="map-legend">
     <span><span style="color:#4caf50">━━</span> ≤1 min</span>
     <span><span style="color:#ffa000">━━</span> ≤5 min</span>
-    <span><span style="color:#f44336">━━</span> &gt;5 min</span>
+    <span><span style="color:#ff6d00">━━</span> ≤10 min</span>
+    <span><span style="color:#e53935">━━</span> ≤20 min</span>
+    <span><span style="color:#c62828">━━</span> ≤30 min</span>
+    <span><span style="color:#ab47bc">━━</span> &gt;30 min</span>
     <span class="dim">━━ morning &nbsp; ╌╌ evening &nbsp;|&nbsp; line colour = mean arr delay &nbsp;|&nbsp; click for details</span>
   </div>
 </div>
@@ -201,9 +207,12 @@ function fmtPct(v) {
 function delayClass(seconds) {
   if (seconds === null || seconds === undefined) return 'dim';
   const m = seconds / 60;
-  if (m <= 1) return 'green';
-  if (m <= 5) return 'amber';
-  return 'red';
+  if (m <= 1)  return 'green';
+  if (m <= 5)  return 'amber';
+  if (m <= 10) return 'orange';
+  if (m <= 20) return 'red';
+  if (m <= 30) return 'darkred';
+  return 'purple';
 }
 function scoreClass(s) {
   return s >= 0.75 ? 'sg' : (s >= 0.5 ? 'sa' : 'sr');
@@ -433,14 +442,11 @@ async function loadHistogram() {
   const res = await fetch('/api/histogram?' + p);
   const data = await res.json();
 
-  // Color by bucket position: early buckets = green, later = red
-  const bgColors = data.labels.map((_, i) => {
-    const ratio = i / (data.labels.length - 1);
-    if (ratio < 0.15) return '#4caf5099';
-    if (ratio < 0.40) return '#ffa00099';
-    return '#f4433699';
-  });
-  const borderColors = bgColors.map(c => c.slice(0, 7));
+  // Color each bucket by its midpoint delay (matches delayClass thresholds)
+  // Midpoints in seconds for HIST_BREAKPOINTS [0,60,120,180,240,300,360,420,480,600,900,1800,∞]
+  const BUCKET_MIDS_S = [30, 90, 150, 210, 270, 330, 390, 450, 540, 750, 1350, 2400];
+  const bgColors     = BUCKET_MIDS_S.map(s => mapDelayColor(s) + '99');
+  const borderColors = BUCKET_MIDS_S.map(s => mapDelayColor(s));
 
   if (histChart) histChart.destroy();
   histChart = new Chart(document.getElementById('histChart').getContext('2d'), {
@@ -495,7 +501,10 @@ function mapDelayColor(seconds) {
   const m = seconds / 60;
   if (m <= 1)  return '#4caf50';
   if (m <= 5)  return '#ffa000';
-  return '#f44336';
+  if (m <= 10) return '#ff6d00';
+  if (m <= 20) return '#e53935';
+  if (m <= 30) return '#c62828';
+  return '#ab47bc';
 }
 
 /* Returns [dLat, dLon] perpendicular offset for a line from pt1→pt2.

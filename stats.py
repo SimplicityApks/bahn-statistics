@@ -357,11 +357,12 @@ def _color_delay(seconds: Optional[float]) -> str:
     if seconds is None:
         return "dim"
     m = seconds / 60
-    if m <= 1:
-        return "green"
-    if m <= 5:
-        return "yellow"
-    return "red"
+    if m <= 1:   return "green"
+    if m <= 5:   return "yellow"
+    if m <= 10:  return "dark_orange"
+    if m <= 20:  return "red"
+    if m <= 30:  return "bright_red"
+    return "magenta"
 
 
 def _color_min(minutes: Optional[float]) -> str:
