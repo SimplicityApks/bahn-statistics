@@ -8,6 +8,7 @@ Tracks real-time delays on the commutes around Düsseldorf Hbf commute and build
 - Captures departure and arrival delays for S6, RE1, RE2, RE6, RE11 etc.
 - Stores everything in a local SQLite database
 - Outputs delay statistics with percentiles and ranked train recommendations
+- Serves a live web dashboard with charts (Chart.js)
 
 **Morning:** departures 07:00–09:00
 **Evening:** departures 17:00–20:00
@@ -39,6 +40,16 @@ python3 main.py stats --route morning
 python3 main.py stats --since 2026-02-01
 ```
 
+**Start the web dashboard** (open http://127.0.0.1:8000 in a browser):
+```bash
+pip install fastapi "uvicorn[standard]"   # first time only
+python3 main.py web
+python3 main.py web --port 8080
+python3 main.py web --reload              # dev mode, picks up dashboard.html edits live
+```
+
+The scraper daemon and web server run as separate processes and share `bahn.db` safely via SQLite WAL mode.
+
 **Verify station IDs against live API:**
 ```bash
 python3 main.py verify
@@ -61,7 +72,7 @@ python3 main.py scrape
 
 ## Statistics output
 
-After a week or two of data, `python3 main.py stats` gives you:
+After a week or two of data, `python3 main.py stats` (terminal) or the web dashboard give you:
 
 - **Departure delays** — mean, p50, p75, p90, p95 per line
 - **Arrival delays** — mean, p50, p90 per line
@@ -90,6 +101,8 @@ Trains are matched across the departure and arrival boards using their HAFAS `tr
 | `database.py` | SQLite schema and upsert logic |
 | `scraper.py` | Polling daemon and two-stage delay capture |
 | `stats.py` | Statistics computation and terminal output |
+| `web.py` | FastAPI server and JSON API endpoints |
+| `dashboard.html` | Web dashboard frontend (HTML/CSS/JS, Chart.js) |
 | `main.py` | CLI entry point |
 | `bahn.db` | Created at runtime, all captured data |
 | `bahn-scraper.log` | Created at runtime, daemon log |
