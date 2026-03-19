@@ -92,6 +92,19 @@ tr:hover td { background: #1e1e35; }
 .map-station-label::before { display: none !important; }
 #routeMap { height: 400px; border-radius: 6px; }
 .map-legend { display:flex; gap:18px; font-size:0.8em; margin-top:6px; align-items:center; flex-wrap:wrap; }
+.map-fs-wrap { position: relative; }
+/* fullscreen button */
+.fs-btn {
+  position: absolute; top: 6px; right: 6px; z-index: 1000;
+  background: rgba(20,20,40,0.85); border: 1px solid #444;
+  color: #88b4f7; padding: 2px 7px; border-radius: 4px;
+  cursor: pointer; font-family: inherit; font-size: 0.85em; line-height: 1.4;
+}
+.fs-btn:hover { background: #2255aa; color: #fff; border-color: #2255aa; }
+/* fullscreen states */
+.chart-container:fullscreen { height: 100vh !important; border-radius: 0; }
+.map-fs-wrap:fullscreen { height: 100vh; background: #0d0d18; }
+.map-fs-wrap:fullscreen #routeMap { height: 100% !important; border-radius: 0; }
 </style>
 </head>
 <body>
@@ -138,7 +151,10 @@ tr:hover td { background: #1e1e35; }
 
 <div class="section">
   <h2>Route Map — station &amp; line delays</h2>
-  <div id="routeMap"></div>
+  <div class="map-fs-wrap">
+    <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
+    <div id="routeMap"></div>
+  </div>
   <div class="map-legend">
     <span><span style="color:#4caf50">━━</span> ≤1 min</span>
     <span><span style="color:#ffa000">━━</span> ≤5 min</span>
@@ -153,19 +169,28 @@ tr:hover td { background: #1e1e35; }
 <div class="charts-row">
   <div class="section">
     <h2>Delay Trend — mean arr delay per day (min)</h2>
-    <div class="chart-container"><canvas id="trendChart"></canvas></div>
+    <div class="chart-container">
+      <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
+      <canvas id="trendChart"></canvas>
+    </div>
     <div class="dim" style="font-size:0.8em">Selected route (defaults to morning). Gaps = no data that day.</div>
   </div>
   <div class="section">
     <h2>Departure Slot Analysis — mean arr delay (min)</h2>
-    <div class="chart-container"><canvas id="slotChart"></canvas></div>
+    <div class="chart-container">
+      <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
+      <canvas id="slotChart"></canvas>
+    </div>
     <div class="dim" style="font-size:0.8em">Mean arrival delay by 10-min departure slot, selected route.</div>
   </div>
 </div>
 
 <div class="section">
   <h2>Arrival Delay Distribution</h2>
-  <div class="chart-container" style="height:220px"><canvas id="histChart"></canvas></div>
+  <div class="chart-container" style="height:220px">
+    <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
+    <canvas id="histChart"></canvas>
+  </div>
 </div>
 
 <script>
@@ -692,6 +717,17 @@ async function loadAll() {
     document.getElementById('lastUpdated').textContent = 'Error: ' + e.message;
   }
 }
+
+function toggleFullscreen(el) {
+  if (!document.fullscreenElement) el.requestFullscreen();
+  else document.exitFullscreen();
+}
+document.addEventListener('fullscreenchange', () => {
+  if (trendChart) trendChart.resize();
+  if (slotChart)  slotChart.resize();
+  if (histChart)  histChart.resize();
+  if (leafletMap) leafletMap.invalidateSize();
+});
 
 document.getElementById('sinceInput').addEventListener('change', loadAll);
 document.getElementById('routeSelect').addEventListener('change', loadAll);
