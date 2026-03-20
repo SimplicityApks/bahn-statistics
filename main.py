@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         "web",
         help="Start the web dashboard server.",
     )
-    p_web.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+    p_web.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0).")
     p_web.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000).")
     p_web.add_argument("--reload", action="store_true", help="Enable auto-reload (dev mode).")
 
