@@ -123,7 +123,11 @@ def _rewrite_html(src: Path) -> str:
     # All other endpoints: drop query params, point to static JSON
     html = html.replace("fetch('/api/summary?' + p)", "fetch('api/summary.json')")
     html = html.replace("fetch('/api/slots?' + p)", "fetch('api/slots.json')")
-    html = html.replace("fetch('/api/histogram?' + p)", "fetch('api/histogram.json')")
+    # Histogram has per-route files; pick the right one from the in-scope `route` variable
+    html = html.replace(
+        "fetch('/api/histogram?' + p)",
+        "fetch(route ? `api/histogram_${route}.json` : 'api/histogram.json')",
+    )
     html = html.replace("fetch('/api/map?' + p)", "fetch('api/map.json')")
 
     return html
@@ -161,9 +165,13 @@ def export(out_dir: Path) -> None:
         (api_dir / f"trend_{route}.json").write_text(json.dumps(_build_trend(journeys, route)))
     print(f"  trend_<route>.json  ({len(ROUTES)} routes)")
 
-    # histogram.json
+    # histogram.json (all routes) + histogram_<route>.json per route — mirrors trend pattern
     (api_dir / "histogram.json").write_text(json.dumps(_build_histogram(journeys)))
-    print("  histogram.json")
+    for route in ROUTES:
+        (api_dir / f"histogram_{route}.json").write_text(
+            json.dumps(_build_histogram(journeys, route=route))
+        )
+    print(f"  histogram.json + histogram_<route>.json  ({len(ROUTES)} routes)")
 
     # map.json
     (api_dir / "map.json").write_text(json.dumps(_build_map(journeys)))

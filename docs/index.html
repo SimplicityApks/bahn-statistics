@@ -380,8 +380,10 @@ async function loadSummary() {
     : `${data.total} journeys`;
   document.getElementById('headerMeta').textContent = meta;
 
+  // Static export ships all routes in one file; server pre-filters. Filter client-side either way.
   let arrHtml = '', dynHtml = '';
   for (const r of ROUTE_ORDER) {
+    if (route && r !== route) continue;
     if (data.stats[r]) {
       arrHtml += buildArrivalTable(r, data.stats[r]);
       dynHtml += buildDynamicsTable(r, data.stats[r]);
@@ -389,7 +391,8 @@ async function loadSummary() {
   }
   document.getElementById('arrivalTables').innerHTML  = arrHtml || '<span class="dim">No data</span>';
   document.getElementById('dynamicsTables').innerHTML = dynHtml || '<span class="dim">No data</span>';
-  document.getElementById('recsTable').innerHTML      = buildRecsTable(data.recommendations);
+  const recs = route ? data.recommendations.filter(rec => rec.route === route) : data.recommendations;
+  document.getElementById('recsTable').innerHTML      = buildRecsTable(recs);
 }
 
 async function loadTrend() {
@@ -471,7 +474,7 @@ async function loadHistogram() {
   const p = getParams();
   const route = getRoute();
   if (route) p.set('route', route);
-  const res = await fetch('api/histogram.json');
+  const res = await fetch(route ? `api/histogram_${route}.json` : 'api/histogram.json');
   const data = await res.json();
 
   // Color each bucket by its midpoint delay (matches delayClass thresholds)
