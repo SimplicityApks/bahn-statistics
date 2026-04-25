@@ -1,0 +1,56 @@
+name: Scrape & Publish
+
+on:
+  schedule:
+    # Every 15 minutes — catches both morning (CET 7-9) and evening (CET 16-19) commute windows.
+    # Note: GitHub Actions scheduled runs can be delayed 5-30 min in practice.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:  # allow manual trigger from the Actions tab
+
+# Only one run at a time; new runs wait rather than cancel in-flight ones
+# (avoids races where two runners check out the same DB version)
+concurrency:
+  group: scrape-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # needed to commit bahn.db + docs/ back to the repo
+
+jobs:
+  scrape-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape (single cycle)
+        run: python3 main.py scrape --once
+
+      - name: Export static site
+        run: python3 export.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bahn.db docs/
+          if git diff --staged --quiet; then
+            echo "Nothing new to commit."
+            exit 0
+          fi
+          git commit -m "chore: scrape $(date -u '+%Y-%m-%dT%H:%MZ')"
+          # Pull with rebase to handle concurrent runs committing ahead of us
+          git pull --rebase origin main
+          git push origin main
