@@ -2,13 +2,15 @@
 
 Tracks real-time delays on the commutes around Düsseldorf Hbf commute and builds statistics over time to tell you which train to actually take.
 
+**Live dashboard:** https://simplicityapks.github.io/bahn-statistics/ — auto-updated by GitHub Actions after every scrape.
+
 ## What it does
 
 - Polls the DB HAFAS API every 5 minutes during commute windows
 - Captures departure and arrival delays for S6, RE1, RE2, RE6, RE11 etc.
 - Stores everything in a local SQLite database
 - Outputs delay statistics with percentiles and ranked train recommendations
-- Serves a live web dashboard with charts (Chart.js)
+- Serves a live web dashboard with charts (Chart.js), also published to GitHub Pages
 
 **Morning:** departures 07:00–09:00
 **Evening:** departures 17:00–20:00
