@@ -2,9 +2,13 @@ name: Scrape & Publish
 
 on:
   schedule:
-    # Every 15 minutes — catches both morning (CET 7-9) and evening (CET 16-19) commute windows.
-    # Note: GitHub Actions scheduled runs can be delayed 5-30 min in practice.
-    - cron: '*/15 * * * *'
+    # Active windows are 06:45–10:30 and 16:45–20:30 LOCAL (CET/CEST).
+    # In UTC that is 04:45–09:30 (CEST) or 05:45–10:30 (CET) for morning,
+    # and 14:45–19:30 (CEST) or 15:45–20:30 (CET) for evening.
+    # Cover both seasons by firing during 04–09 UTC and 14–19 UTC (every 15 min).
+    # GitHub Actions cron can be delayed 5–30 min, so a missed fire near the end
+    # is still fine — scrape_once does a full-window scan in one cycle.
+    - cron: '*/15 4-9,14-19 * * *'
   workflow_dispatch:  # allow manual trigger from the Actions tab
 
 # Only one run at a time; new runs wait rather than cancel in-flight ones

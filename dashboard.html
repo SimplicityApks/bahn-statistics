@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DB Bahn Statistics</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -170,27 +172,31 @@ tr:hover td { background: #1e1e35; }
   <div class="section">
     <h2>Delay Trend — mean arr delay per day (min)</h2>
     <div class="chart-container">
+      <button class="fs-btn" style="right:42px" onclick="if(trendChart) trendChart.resetZoom()" title="Reset zoom">⤺</button>
       <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
       <canvas id="trendChart"></canvas>
     </div>
-    <div class="dim" style="font-size:0.8em">Selected route (defaults to morning). Gaps = no data that day.</div>
+    <div class="dim" style="font-size:0.8em">Selected route (defaults to morning). Gaps = no data that day. Drag = box-zoom · wheel = zoom · ctrl+drag = pan · double-click = reset.</div>
   </div>
   <div class="section">
     <h2>Departure Slot Analysis — mean arr delay (min)</h2>
     <div class="chart-container">
+      <button class="fs-btn" style="right:42px" onclick="if(slotChart) slotChart.resetZoom()" title="Reset zoom">⤺</button>
       <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
       <canvas id="slotChart"></canvas>
     </div>
-    <div class="dim" style="font-size:0.8em">Mean arrival delay by 10-min departure slot, selected route.</div>
+    <div class="dim" style="font-size:0.8em">Mean arrival delay by 10-min departure slot, selected route. Drag = box-zoom · wheel = zoom · double-click = reset.</div>
   </div>
 </div>
 
 <div class="section">
   <h2>Arrival Delay Distribution</h2>
   <div class="chart-container" style="height:220px">
+    <button class="fs-btn" style="right:42px" onclick="if(histChart) histChart.resetZoom()" title="Reset zoom">⤺</button>
     <button class="fs-btn" onclick="toggleFullscreen(this.parentElement)" title="Fullscreen">⛶</button>
     <canvas id="histChart"></canvas>
   </div>
+  <div class="dim" style="font-size:0.8em">Drag = box-zoom · wheel = zoom · double-click = reset.</div>
 </div>
 
 <script>
@@ -366,6 +372,30 @@ const AXIS_STYLE = {
   ticks: { color: '#888', font: { family: "'Courier New', monospace", size: 10 } },
   grid: { color: '#222' },
 };
+
+/* Drag a rectangle to zoom in on the X axis, wheel to zoom around the cursor,
+   ctrl+drag to pan once zoomed, double-click to reset. Same config for all
+   three Chart.js charts. */
+const ZOOM_PLUGIN = {
+  zoom: {
+    wheel: { enabled: true, speed: 0.1 },
+    drag: {
+      enabled: true,
+      backgroundColor: 'rgba(136,180,247,0.15)',
+      borderColor: 'rgba(136,180,247,0.6)',
+      borderWidth: 1,
+      threshold: 5,
+    },
+    pinch: { enabled: true },
+    mode: 'x',
+  },
+  pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
+  limits: { x: { minRange: 1 } },
+};
+
+function attachZoomReset(chart) {
+  chart.canvas.addEventListener('dblclick', () => chart.resetZoom());
+}
 
 /* ---- static-mode aggregation (mirrors stats.py / web.py) ----
    When STATIC_MODE is true (set by export.py for GitHub Pages), data loaders
@@ -800,13 +830,17 @@ async function loadTrend() {
     data: { labels: data.dates, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#d0d0e0', font: { family: "'Courier New',monospace", size: 11 } } } },
+      plugins: {
+        legend: { labels: { color: '#d0d0e0', font: { family: "'Courier New',monospace", size: 11 } } },
+        zoom: ZOOM_PLUGIN,
+      },
       scales: {
         x: { ...AXIS_STYLE, ticks: { ...AXIS_STYLE.ticks, maxTicksLimit: 14, maxRotation: 45 } },
         y: { ...AXIS_STYLE, title: { display: true, text: 'min', color: '#888' } },
       },
     },
   });
+  attachZoomReset(trendChart);
 }
 
 async function loadSlots() {
@@ -840,13 +874,17 @@ async function loadSlots() {
     data: { labels: allSlots, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#d0d0e0', font: { family: "'Courier New',monospace", size: 11 } } } },
+      plugins: {
+        legend: { labels: { color: '#d0d0e0', font: { family: "'Courier New',monospace", size: 11 } } },
+        zoom: ZOOM_PLUGIN,
+      },
       scales: {
         x: { ...AXIS_STYLE },
         y: { ...AXIS_STYLE, title: { display: true, text: 'min', color: '#888' } },
       },
     },
   });
+  attachZoomReset(slotChart);
 }
 
 async function loadHistogram() {
@@ -875,13 +913,14 @@ async function loadHistogram() {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, zoom: ZOOM_PLUGIN },
       scales: {
         x: { ...AXIS_STYLE, title: { display: true, text: 'Delay bucket (min)', color: '#888' } },
         y: { ...AXIS_STYLE, title: { display: true, text: 'Journeys', color: '#888' } },
       },
     },
   });
+  attachZoomReset(histChart);
 }
 
 /* ---- map ---- */
