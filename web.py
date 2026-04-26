@@ -126,6 +126,45 @@ def _build_trend(journeys: list[dict], route: str) -> dict:
     return {"dates": all_dates, "series": series}
 
 
+_REVERSE_ROUTE = {
+    "morning": "evening", "evening": "morning",
+    "aachen_morning": "aachen_evening", "aachen_evening": "aachen_morning",
+    "wuppertal_morning": "wuppertal_evening", "wuppertal_evening": "wuppertal_morning",
+    "bonn_morning": "bonn_evening", "bonn_evening": "bonn_morning",
+}
+
+
+def _build_weekday(journeys: list[dict], scope_route: Optional[str] = None) -> dict:
+    """Mean arr delay (min) per weekday × direction (morning/evening)."""
+    morning: list[list[float]] = [[] for _ in range(7)]
+    evening: list[list[float]] = [[] for _ in range(7)]
+    for j in journeys:
+        if j.get("cancelled") or j.get("arr_delay_s") is None:
+            continue
+        route = j.get("route") or ""
+        if scope_route:
+            if route != scope_route and route != _REVERSE_ROUTE.get(scope_route):
+                continue
+        try:
+            wd = datetime.strptime(j.get("date") or "", "%Y-%m-%d").weekday()  # 0=Mon
+        except ValueError:
+            continue
+        is_morning = route == "morning" or route.endswith("_morning")
+        delay_min = float(j["arr_delay_s"]) / 60.0
+        (morning if is_morning else evening)[wd].append(delay_min)
+
+    def _agg(buckets: list[list[float]]) -> list[Optional[float]]:
+        return [round(statistics.mean(b), 2) if len(b) >= _MIN_COUNT else None for b in buckets]
+
+    return {
+        "labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "morning_means": _agg(morning),
+        "evening_means": _agg(evening),
+        "morning_counts": [len(b) for b in morning],
+        "evening_counts": [len(b) for b in evening],
+    }
+
+
 def _build_histogram(
     journeys: list[dict],
     route: Optional[str] = None,
@@ -210,6 +249,17 @@ async def api_trend(
     conn: sqlite3.Connection = request.app.state.conn
     journeys = get_journeys_for_stats(conn, since_date=since)
     return _build_trend(journeys, route)
+
+
+@app.get("/api/weekday")
+async def api_weekday(
+    request: Request,
+    since: Optional[str] = Query(None),
+    route: Optional[str] = Query(None),
+):
+    conn: sqlite3.Connection = request.app.state.conn
+    journeys = get_journeys_for_stats(conn, since_date=since)
+    return _build_weekday(journeys, scope_route=route)
 
 
 @app.get("/api/histogram")
