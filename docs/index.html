@@ -367,13 +367,395 @@ const AXIS_STYLE = {
   grid: { color: '#222' },
 };
 
+/* ---- static-mode aggregation (mirrors stats.py / web.py) ----
+   When STATIC_MODE is true (set by export.py for GitHub Pages), data loaders
+   pull a single api/journeys.json and recompute everything in the browser so
+   the Since / Route filters work without a server. Locally the FastAPI server
+   still answers /api/* and STATIC_MODE stays false. */
+let STATIC_MODE = true;
+let _allJourneys = null;
+
+async function getAllJourneys() {
+  if (_allJourneys === null) {
+    const res = await fetch('api/journeys.json');
+    _allJourneys = await res.json();
+  }
+  return _allJourneys;
+}
+
+const _MIN_COUNT_JS = 5;
+const _CANCEL_PENALTY_S = 1800.0;
+const HIST_BREAKPOINTS = [0, 60, 120, 180, 240, 300, 360, 420, 480, 600, 900, 1800, Infinity];
+const HIST_LABELS = ["<1","1-2","2-3","3-4","4-5","5-6","6-7","7-8","8-10","10-15","15-30","30+"];
+const ROUTE_STATIONS_JS = {
+  morning: ['DDF','ESS'], evening: ['ESS','DDF'],
+  aachen_morning: ['AAH','DDF'], aachen_evening: ['DDF','AAH'],
+  wuppertal_morning: ['WUP','DDF'], wuppertal_evening: ['DDF','WUP'],
+  bonn_morning: ['BON','DDF'], bonn_evening: ['DDF','BON'],
+};
+const STATION_COORDS_FULL = {
+  DDF: {lat:51.2195, lon:6.7942, name:'Düsseldorf Hbf'},
+  ESS: {lat:51.4508, lon:7.0131, name:'Essen Hbf'},
+  AAH: {lat:50.7681, lon:6.0910, name:'Aachen Hbf'},
+  WUP: {lat:51.2543, lon:7.1498, name:'Wuppertal Hbf'},
+  BON: {lat:50.7320, lon:7.0990, name:'Bonn Hbf'},
+};
+const ROUTE_LABELS_FULL = {
+  morning:           'MORNING  Düsseldorf Hbf → Essen Hbf',
+  evening:           'EVENING  Essen Hbf → Düsseldorf Hbf',
+  aachen_morning:    'MORNING  Aachen Hbf → Düsseldorf Hbf',
+  aachen_evening:    'EVENING  Düsseldorf Hbf → Aachen Hbf',
+  wuppertal_morning: 'MORNING  Wuppertal Hbf → Düsseldorf Hbf',
+  wuppertal_evening: 'EVENING  Düsseldorf Hbf → Wuppertal Hbf',
+  bonn_morning:      'MORNING  Bonn Hbf → Düsseldorf Hbf',
+  bonn_evening:      'EVENING  Düsseldorf Hbf → Bonn Hbf',
+};
+
+function _percentileJS(data, p) {
+  if (!data.length) return 0.0;
+  const s = [...data].sort((a, b) => a - b);
+  const idx = (p / 100) * (s.length - 1);
+  const lo = Math.floor(idx), hi = lo + 1;
+  if (hi >= s.length) return s[s.length - 1];
+  return s[lo] + (idx - lo) * (s[hi] - s[lo]);
+}
+function _meanJS(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null; }
+function _medianJS(arr) { return arr.length ? _percentileJS(arr, 50) : null; }
+
+function _filterTravelPairs(pairs, factor=2.5) {
+  if (pairs.length < 4) return pairs;
+  const med = _medianJS(pairs.map(p => p[0]));
+  if (med <= 0) return pairs;
+  return pairs.filter(p => p[0] <= med * factor);
+}
+
+function computeStats(journeys) {
+  const result = {};
+  for (const j of journeys) {
+    const route = j.route, line = j.line_name;
+    if (!result[route]) result[route] = {};
+    if (!result[route][line]) {
+      result[route][line] = {
+        count: 0, cancelled_count: 0,
+        dep_delays: [], arr_delays: [], journey_deltas: [], travel_pairs: [],
+      };
+    }
+    const e = result[route][line];
+    e.count += 1;
+    if (j.cancelled) { e.cancelled_count += 1; continue; }
+    const dd = j.dep_delay_s, ad = j.arr_delay_s;
+    if (dd !== null && dd !== undefined) e.dep_delays.push(+dd);
+    if (ad !== null && ad !== undefined) e.arr_delays.push(+ad);
+    if (dd !== null && dd !== undefined && ad !== null && ad !== undefined) {
+      e.journey_deltas.push((+ad) - (+dd));
+    }
+    if (j.planned_dep && j.planned_arr) {
+      const t = (Date.parse(j.planned_arr) - Date.parse(j.planned_dep)) / 60000;
+      if (t > 0 && t < 300) {
+        e.travel_pairs.push([t, (ad !== null && ad !== undefined) ? +ad : null]);
+      }
+    }
+  }
+  for (const route of Object.keys(result)) {
+    for (const line of Object.keys(result[route])) {
+      const data = result[route][line];
+      const dd = data.dep_delays.slice();
+      const ad = data.arr_delays.slice();
+      const jd = data.journey_deltas;
+      const cancelled = data.cancelled_count;
+      const cleanPairs = _filterTravelPairs(data.travel_pairs);
+      const tt = cleanPairs.map(p => p[0]);
+      const dt = cleanPairs.filter(p => p[1] !== null).map(p => p[0] + 15.0 + p[1] / 60.0);
+      const travelMedMin = tt.length ? _medianJS(tt) : 30.0;
+      for (let i = 0; i < cancelled; i++) {
+        dd.push(_CANCEL_PENALTY_S);
+        ad.push(_CANCEL_PENALTY_S);
+        dt.push(travelMedMin + 15.0 + _CANCEL_PENALTY_S / 60.0);
+      }
+      data.s = {
+        cancel_rate_pct: data.count ? (cancelled / data.count * 100) : 0.0,
+        on_time_arr_pct: ad.length ? (ad.filter(v => v <= 60).length / ad.length * 100) : 0.0,
+        dep_mean_s:  dd.length ? _meanJS(dd) : null,
+        dep_p90_s:   dd.length ? _percentileJS(dd, 90) : null,
+        arr_mean_s:  ad.length ? _meanJS(ad) : null,
+        arr_p50_s:   ad.length ? _percentileJS(ad, 50) : null,
+        arr_p75_s:   ad.length ? _percentileJS(ad, 75) : null,
+        arr_p90_s:   ad.length ? _percentileJS(ad, 90) : null,
+        arr_p95_s:   ad.length ? _percentileJS(ad, 95) : null,
+        delta_mean_s: jd.length ? _meanJS(jd) : null,
+        delta_p50_s:  jd.length ? _percentileJS(jd, 50) : null,
+        delta_p90_s:  jd.length ? _percentileJS(jd, 90) : null,
+        door_mean_min: dt.length ? _meanJS(dt) : null,
+        door_p50_min:  dt.length ? _percentileJS(dt, 50) : null,
+        door_p90_min:  dt.length ? _percentileJS(dt, 90) : null,
+        travel_mean_min: tt.length ? _meanJS(tt) : null,
+      };
+    }
+  }
+  return result;
+}
+
+function stripStats(stats) {
+  const out = {};
+  for (const route of Object.keys(stats)) {
+    const filtered = {};
+    for (const line of Object.keys(stats[route])) {
+      const d = stats[route][line];
+      if (d.count >= _MIN_COUNT_JS) {
+        filtered[line] = { count: d.count, cancelled_count: d.cancelled_count, s: d.s };
+      }
+    }
+    if (Object.keys(filtered).length) out[route] = filtered;
+  }
+  return out;
+}
+
+function rankRecommendations(stats) {
+  const recs = [];
+  for (const route of Object.keys(stats)) {
+    for (const line of Object.keys(stats[route])) {
+      const data = stats[route][line];
+      if (data.count < _MIN_COUNT_JS) continue;
+      const s = data.s;
+      const arrP90s = s.arr_p90_s;
+      const deltaP90 = s.delta_p90_s ?? 0.0;
+      const cancel = s.cancel_rate_pct ?? 0.0;
+      const noArrData = arrP90s === null || arrP90s === undefined;
+      const arrForScore = noArrData ? 0.0 : arrP90s;
+      let score = (
+        (noArrData ? 0.0 : 0.5 * Math.max(0, 1 - arrForScore / 600))
+        + 0.3 * Math.max(0, 1 - deltaP90 / 600)
+        + 0.2 * Math.max(0, 1 - cancel / 100)
+      );
+      score = Math.max(0, Math.min(1, score));
+      const arrMeanMin = s.arr_mean_s !== null && s.arr_mean_s !== undefined ? s.arr_mean_s / 60 : null;
+      const arrP90Min  = arrP90s !== null && arrP90s !== undefined ? arrP90s / 60 : null;
+      const deltaP90Min = deltaP90 / 60;
+      const doorP90 = s.door_p90_min;
+      const cancelStr = `${cancel.toFixed(1)}%`;
+      let verdict;
+      if (noArrData) {
+        verdict = 'Pending — no arrival data yet; score excludes arrival component.';
+      } else if (score >= 0.85) {
+        verdict = 'Excellent — arrives on time, minimal surprises en route.';
+      } else if (score >= 0.70) {
+        const doorStr = doorP90 ? `, door-to-door p90 ${doorP90.toFixed(0)} min` : '';
+        verdict = `Good — mean arr delay ${arrMeanMin.toFixed(1)} min, p90 ${arrP90Min.toFixed(1)} min${doorStr}.`;
+      } else if (score >= 0.50) {
+        verdict = `Moderate — arr p90 ${arrP90Min.toFixed(1)} min, surprise p90 ${deltaP90Min.toFixed(1)} min, cancel ${cancelStr}.`;
+      } else {
+        verdict = `Poor — high arr p90 (${arrP90Min.toFixed(1)} min) or cancellation rate ${cancelStr}.`;
+      }
+      recs.push({
+        route, line, score, verdict, count: data.count,
+        arr_mean_min: arrMeanMin, arr_p90_min: arrP90Min,
+        delta_p90_min: deltaP90Min,
+        door_mean_min: s.door_mean_min, door_p90_min: doorP90,
+        cancel_pct: cancel,
+      });
+    }
+  }
+  recs.sort((a, b) =>
+    b.score - a.score || a.route.localeCompare(b.route) || a.line.localeCompare(b.line)
+  );
+  return recs;
+}
+
+function computeSlotStats(journeys) {
+  const buckets = {};
+  for (const j of journeys) {
+    if (j.cancelled || j.arr_delay_s === null || j.arr_delay_s === undefined) continue;
+    if (!j.planned_dep) continue;
+    const m = j.planned_dep.match(/T(\d{2}):(\d{2})/);
+    if (!m) continue;
+    const minute = parseInt(m[2], 10);
+    const slot = `${m[1]}:${String(Math.floor(minute / 10) * 10).padStart(2, '0')}`;
+    const r = j.route, l = j.line_name;
+    if (!buckets[r]) buckets[r] = {};
+    if (!buckets[r][l]) buckets[r][l] = {};
+    if (!buckets[r][l][slot]) buckets[r][l][slot] = [];
+    buckets[r][l][slot].push(+j.arr_delay_s);
+  }
+  const out = {};
+  for (const r of Object.keys(buckets)) {
+    out[r] = {};
+    for (const l of Object.keys(buckets[r])) {
+      const slots = buckets[r][l];
+      const sortedKeys = Object.keys(slots).sort();
+      const obj = {};
+      for (const k of sortedKeys) obj[k] = _meanJS(slots[k]);
+      out[r][l] = obj;
+    }
+  }
+  return out;
+}
+
+function buildSlotsResponse(journeys) {
+  const slots = computeSlotStats(journeys);
+  const counts = {};
+  for (const j of journeys) {
+    if (j.cancelled || j.arr_delay_s === null || j.arr_delay_s === undefined) continue;
+    counts[j.route] = counts[j.route] || {};
+    counts[j.route][j.line_name] = (counts[j.route][j.line_name] || 0) + 1;
+  }
+  const out = {};
+  for (const r of Object.keys(slots)) {
+    const lines = slots[r];
+    const kept = {};
+    for (const l of Object.keys(lines)) {
+      if ((counts[r]?.[l] || 0) >= _MIN_COUNT_JS) kept[l] = lines[l];
+    }
+    if (Object.keys(kept).length) out[r] = kept;
+  }
+  return out;
+}
+
+function buildTrend(journeys, route) {
+  const byDateLine = {};
+  for (const j of journeys) {
+    if (j.route !== route) continue;
+    if (j.cancelled || j.arr_delay_s === null || j.arr_delay_s === undefined) continue;
+    const d = j.date || '', l = j.line_name || '';
+    if (!byDateLine[d]) byDateLine[d] = {};
+    if (!byDateLine[d][l]) byDateLine[d][l] = [];
+    byDateLine[d][l].push(+j.arr_delay_s);
+  }
+  const allDates = Object.keys(byDateLine).sort();
+  const lineCounts = {};
+  for (const dateData of Object.values(byDateLine)) {
+    for (const l of Object.keys(dateData)) {
+      lineCounts[l] = (lineCounts[l] || 0) + dateData[l].length;
+    }
+  }
+  const sortedLines = Object.keys(lineCounts).filter(l => lineCounts[l] >= _MIN_COUNT_JS).sort();
+  const series = {};
+  for (const l of sortedLines) {
+    series[l] = allDates.map(d => {
+      const arr = byDateLine[d][l];
+      return arr && arr.length ? Math.round(_meanJS(arr) / 60 * 100) / 100 : null;
+    });
+  }
+  return { dates: allDates, series };
+}
+
+function buildHistogram(journeys, route, line) {
+  const filtered = journeys.filter(j =>
+    !j.cancelled && j.arr_delay_s !== null && j.arr_delay_s !== undefined
+    && (!route || j.route === route)
+    && (!line  || j.line_name === line)
+  );
+  const counts = new Array(HIST_LABELS.length).fill(0);
+  for (const j of filtered) {
+    const d = +j.arr_delay_s;
+    for (let i = 0; i < HIST_BREAKPOINTS.length - 1; i++) {
+      if (HIST_BREAKPOINTS[i] <= d && d < HIST_BREAKPOINTS[i + 1]) { counts[i] += 1; break; }
+    }
+  }
+  return { labels: HIST_LABELS, counts, total: filtered.length };
+}
+
+function buildMap(journeys) {
+  const rlDep = {}, rlArr = {}, stDep = {}, stArr = {};
+  for (const j of journeys) {
+    if (j.cancelled) continue;
+    const r = j.route;
+    if (!ROUTE_STATIONS_JS[r]) continue;
+    const [fromId, toId] = ROUTE_STATIONS_JS[r];
+    const line = j.line_name || '?';
+    const k = r + '|' + line;
+    if (j.dep_delay_s !== null && j.dep_delay_s !== undefined) {
+      (rlDep[k] = rlDep[k] || []).push(+j.dep_delay_s);
+      (stDep[fromId] = stDep[fromId] || []).push(+j.dep_delay_s);
+    }
+    if (j.arr_delay_s !== null && j.arr_delay_s !== undefined) {
+      (rlArr[k] = rlArr[k] || []).push(+j.arr_delay_s);
+      (stArr[toId] = stArr[toId] || []).push(+j.arr_delay_s);
+    }
+  }
+  const r1 = v => Math.round(v * 10) / 10;
+  const routes = {};
+  for (const r of Object.keys(ROUTE_STATIONS_JS)) {
+    const [fromId, toId] = ROUTE_STATIONS_JS[r];
+    const keys = new Set();
+    for (const k of Object.keys(rlDep)) if (k.startsWith(r + '|')) keys.add(k);
+    for (const k of Object.keys(rlArr)) if (k.startsWith(r + '|')) keys.add(k);
+    const lines = {};
+    for (const k of [...keys].sort()) {
+      const line = k.slice(r.length + 1);
+      const dd = rlDep[k] || [], ad = rlArr[k] || [];
+      const count = Math.max(dd.length, ad.length);
+      if (count < _MIN_COUNT_JS) continue;
+      lines[line] = {
+        count,
+        mean_dep_delay_s: dd.length ? r1(_meanJS(dd)) : null,
+        mean_arr_delay_s: ad.length ? r1(_meanJS(ad)) : null,
+      };
+    }
+    if (Object.keys(lines).length) {
+      routes[r] = { from_id: fromId, to_id: toId, label: ROUTE_LABELS_FULL[r] || r, lines };
+    }
+  }
+  const stations = {};
+  for (const sid of Object.keys(STATION_COORDS_FULL)) {
+    const dd = stDep[sid] || [], ad = stArr[sid] || [], all = ad.concat(dd);
+    stations[sid] = {
+      ...STATION_COORDS_FULL[sid],
+      mean_dep_delay_s: dd.length ? r1(_meanJS(dd)) : null,
+      dep_count: dd.length,
+      mean_arr_delay_s: ad.length ? r1(_meanJS(ad)) : null,
+      arr_count: ad.length,
+      overall_mean_s: all.length ? r1(_meanJS(all)) : null,
+    };
+  }
+  return { stations, routes };
+}
+
+function getDateRangeJS(journeys) {
+  let mn = null, mx = null;
+  for (const j of journeys) {
+    if (!j.date) continue;
+    if (mn === null || j.date < mn) mn = j.date;
+    if (mx === null || j.date > mx) mx = j.date;
+  }
+  return mn && mx ? [mn, mx] : null;
+}
+
+async function loadData(endpoint, params={}) {
+  if (!STATIC_MODE) {
+    const p = new URLSearchParams();
+    if (params.since) p.set('since', params.since);
+    if (params.route) p.set('route', params.route);
+    if (params.line)  p.set('line', params.line);
+    const res = await fetch('/api/' + endpoint + '?' + p);
+    return res.json();
+  }
+  const all = await getAllJourneys();
+  const sinceFiltered = params.since ? all.filter(j => j.date >= params.since) : all;
+  if (endpoint === 'summary') {
+    const filt = params.route ? sinceFiltered.filter(j => j.route === params.route) : sinceFiltered;
+    const stats = computeStats(filt);
+    return {
+      stats: stripStats(stats),
+      recommendations: rankRecommendations(stats),
+      date_range: getDateRangeJS(filt),
+      total: filt.length,
+    };
+  }
+  if (endpoint === 'slots') {
+    const filt = params.route ? sinceFiltered.filter(j => j.route === params.route) : sinceFiltered;
+    return buildSlotsResponse(filt);
+  }
+  if (endpoint === 'trend')     return buildTrend(sinceFiltered, params.route);
+  if (endpoint === 'histogram') return buildHistogram(sinceFiltered, params.route || null, params.line || null);
+  if (endpoint === 'map')       return buildMap(sinceFiltered);
+  throw new Error('unknown endpoint: ' + endpoint);
+}
+
 /* ---- data loaders ---- */
 async function loadSummary() {
-  const p = getParams();
-  const route = getRoute();
-  if (route) p.set('route', route);
-  const res = await fetch('api/summary.json');
-  const data = await res.json();
+  const since = document.getElementById('sinceInput').value || null;
+  const route = getRoute() || null;
+  const data = await loadData('summary', { since, route });
 
   const meta = data.date_range
     ? `${data.date_range[0]} → ${data.date_range[1]}  ·  ${data.total} journeys`
@@ -396,11 +778,9 @@ async function loadSummary() {
 }
 
 async function loadTrend() {
-  const p = getParams();
+  const since = document.getElementById('sinceInput').value || null;
   const route = getRoute() || 'morning';
-  p.set('route', route);
-  const res = await fetch(`api/trend_${route}.json`);
-  const data = await res.json();
+  const data = await loadData('trend', { since, route });
 
   const lines = Object.keys(data.series).sort();
   const datasets = lines.map((line, i) => ({
@@ -430,10 +810,9 @@ async function loadTrend() {
 }
 
 async function loadSlots() {
-  const p = getParams();
+  const since = document.getElementById('sinceInput').value || null;
   const route = getRoute() || 'morning';
-  const res = await fetch('api/slots.json');
-  const data = await res.json();
+  const data = await loadData('slots', { since });
 
   const routeData = data[route];
   if (!routeData) {
@@ -471,11 +850,9 @@ async function loadSlots() {
 }
 
 async function loadHistogram() {
-  const p = getParams();
-  const route = getRoute();
-  if (route) p.set('route', route);
-  const res = await fetch(route ? `api/histogram_${route}.json` : 'api/histogram.json');
-  const data = await res.json();
+  const since = document.getElementById('sinceInput').value || null;
+  const route = getRoute() || null;
+  const data = await loadData('histogram', { since, route });
 
   // Color each bucket by its midpoint delay (matches delayClass thresholds)
   // Midpoints in seconds for HIST_BREAKPOINTS [0,60,120,180,240,300,360,420,480,600,900,1800,∞]
@@ -562,9 +939,8 @@ function fmtDelaySec(s) {
 async function loadMap() {
   initLeafletMap();
 
-  const p = getParams();  // only carries ?since=… — route filter is visual only
-  const res = await fetch('api/map.json');
-  const data = await res.json();
+  const since = document.getElementById('sinceInput').value || null;
+  const data = await loadData('map', { since });
 
   mapDataLayer.clearLayers();
 
