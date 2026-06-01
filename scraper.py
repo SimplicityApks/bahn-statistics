@@ -525,6 +525,8 @@ async def scrape_route(
     t0 = time_mod.monotonic()
     errors = 0
     upserted = 0
+    refreshed = 0
+    updated = 0
 
     use_journeys = route_cfg.get("use_journeys", False)
 
@@ -539,9 +541,9 @@ async def scrape_route(
 
     try:
         if use_journeys:
-            await _scrape_route_stage2_journeys(client, conn, route_name, route_cfg)
+            refreshed = await _scrape_route_stage2_journeys(client, conn, route_name, route_cfg)
         else:
-            await _scrape_route_stage2(client, conn, route_name, route_cfg)
+            refreshed = await _scrape_route_stage2(client, conn, route_name, route_cfg)
     except Exception as exc:
         log.error("[%s] Stage-2 failed: %s", route_name, exc, exc_info=True)
         errors += 1
@@ -550,7 +552,7 @@ async def scrape_route(
     # the arrival board now that the trains have reached their destination.
     if use_journeys:
         try:
-            await _scrape_route_stage3(client, conn, route_name, route_cfg)
+            updated = await _scrape_route_stage3(client, conn, route_name, route_cfg)
         except Exception as exc:
             log.error("[%s] Stage-3 failed: %s", route_name, exc, exc_info=True)
             errors += 1
@@ -563,7 +565,11 @@ async def scrape_route(
         "errors": errors,
         "duration_s": round(duration, 2),
     }
-    log_scrape_run(conn, run)
+    # Skip the scrape_runs insert on cycles that didn't change any journey row.
+    # An always-on insert dirties bahn.db (in-place page rewrite), producing
+    # zero-data commits when the upstream API is down for hours/days.
+    if upserted + refreshed + updated > 0:
+        log_scrape_run(conn, run)
     return run
 
 
